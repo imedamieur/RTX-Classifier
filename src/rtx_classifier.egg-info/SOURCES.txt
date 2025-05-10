@@ -1,6 +1,7 @@
 README.md
 setup.py
 src/rtx_classifier/__init__.py
+src/rtx_classifier/app.py
 src/rtx_classifier/pipeline.py
 src/rtx_classifier/run.py
 src/rtx_classifier/vectorstore.py

@@ -1,7 +1,7 @@
 """
 VerifyNode for the RTX Classifier.
 
-Verifies that the rationale cites only retrieved text and contains no forbidden terms.
+Verifies that the classification cites only retrieved text and contains no forbidden terms.
 Supports both OpenAI and Google Gemini models.
 """
 from typing import Dict, List, Any, Optional, Set
@@ -26,18 +26,17 @@ DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
 
 class VerifyNode:
     """
-    VerifyNode that verifies the rationale from the classification.
+    VerifyNode that verifies the classification.
     
-    Checks that:
-    1. The rationale cites only content from retrieved texts
-    2. The rationale contains no forbidden terms
-    3. The rationale properly supports the classification
+    The verification process ensures that:
+    1. The classification cites only content from retrieved texts
+    2. The classification contains no forbidden terms
+    3. The classification properly supports the classification
     """
     
     def __init__(
         self,
         llm: Optional[BaseChatModel] = None,
-        forbidden_terms: Optional[List[str]] = None,
         template_path: Optional[str] = None,
     ):
         """
@@ -45,11 +44,9 @@ class VerifyNode:
         
         Args:
             llm: LangChain chat model instance
-            forbidden_terms: List of terms that should not appear in the rationale
             template_path: Path to the Jinja template for the verification prompt
         """
         self.llm = llm
-        self.forbidden_terms = set(forbidden_terms or [])
         self.template_path = template_path
         
         # Default verification prompt
@@ -74,101 +71,55 @@ class VerifyNode:
     def _get_default_template(self) -> ChatPromptTemplate:
         """Get default template for verification."""
         template = """\
-        You are a financial auditor reviewing a classification of an accounting transaction 
-        according to AAOIFI (Accounting and Auditing Organization for Islamic Financial Institutions) standards.
-
-        The transaction details are as follows:
-        Entries:
-        {% for entry in entries %}
-        - {{ entry }}
-        {% else %}
-        No specific journal entries provided.
-        {% endfor %}
-
-        Context: {{ context if context else "No additional context provided." }}
-        Adjustments: {{ adjustments if adjustments else "No specific adjustments mentioned." }}
-        Accounting Treatment: {{ accounting_treatment if accounting_treatment else "No specific accounting treatment mentioned." }}
-
-        The transaction has been classified as: {{ provisional_label_name }}
+        You are an expert in financial accounting and reporting standards, specifically AAOIFI FAS.
+        Your task is to verify a provisional classification of a financial transaction or event.
         
-        The provisional rationale provided is:
-        {% if provisional_rationale and provisional_rationale != "Rationale could not be determined from individual runs." and provisional_rationale != "No rationale generated" %}
-        {{ provisional_rationale }}
-        {% else %}
-        No detailed provisional rationale was provided.
-        {% endif %}
+        The user will provide:
+        1. Retrieved context from AAOIFI FAS documents.
+        2. A provisional classification label (e.g., "Revenue", "Expense", "Asset", "Liability", "Equity").
         
-        The classification was based on the following retrieved sources:
+        You need to perform the following checks:
+        1. Source Adherence: Ensure the provisional classification is plausible based *only* on the provided "Retrieved Context".
+        2. Classification Support: Critically evaluate if the retrieved context supports the provisional classification label.
+        
+        Based on your verification, provide a JSON response with the following fields:
+        - "valid": (boolean) true if the provisional classification is supported by the context. False otherwise.
+        - "final_classification_label": (string) The verified classification label. This should usually be the same as the provisional_label. If the provisional label is fundamentally unsupported, return the original provisional_label and mark as invalid.
+        - "issue_note": (string, optional) If "valid" is false, provide a brief note on the primary issue (e.g., "Context does not support label.", "Label seems unrelated to context."). If "valid" is true, this can be omitted.
+        
+        The provisional classification label is: {{ provisional_label_name }}
+        
+        Retrieved Context:
+        ---
         {% for text in retrieved_texts %}
-        --- Source {{loop.index}} ---
         {{ text }}
+        ---
         {% endfor %}
         
-        Please perform the following:
-        1. Assess the provisional rationale (if a detailed one was provided) against the sources and the classification.
-        2. Check for hallucinated information and ensure it only cites content that is actually present in the retrieved sources.
-        3. Ensure it properly supports the classification and makes clear AAOIFI standard citations (e.g., "FAS 28, paragraph 3.1") for each claim or statement made.
-
-        If a detailed provisional rationale was provided AND it meets all verification criteria, use it as the basis for your response.
-        Otherwise (if no detailed provisional rationale was provided, or if the provided one has issues that cannot be simply corrected), YOU MUST CONSTRUCT a new, valid, and comprehensive rationale based on the '{{ provisional_label_name }}' classification and the retrieved sources.
-        This new rationale must meet all criteria mentioned above (citing sources, no hallucination, supporting classification, AAOIFI citations).
-        
-        Return your verification in this JSON format:
-        {
-          "valid": true/false,  // true if a satisfactory rationale (either the original verified, or a newly constructed one that meets all criteria) is present in the 'rationale' field. false if issues persist or a new rationale could not be constructed.
-          "issues": ["list", "of", "issues found in the original rationale if one was provided and it was problematic", "or 'No detailed provisional rationale provided, new rationale constructed/attempted.' if applicable"],
-          "rationale": "The verified or newly constructed rationale. This should be a single, consolidated text. If construction of a new valid rationale failed (e.g. due to insufficient information in sources for the given classification), explain why clearly.",
-          "citations": ["list", "of", "specific standard citations like FAS 10, para 3.1 or an empty list if none are applicable/found"]
-        }
+        Respond with ONLY the JSON object.
         """
         return ChatPromptTemplate.from_template(template, template_format="jinja2")
     
-    def _contains_forbidden_terms(self, text: str) -> List[str]:
-        """
-        Check if the text contains any forbidden terms.
-        
-        Args:
-            text: Text to check
-            
-        Returns:
-            List of found forbidden terms, empty if none
-        """
-        if not self.forbidden_terms:
-            return []
-            
-        found_terms = []
-        for term in self.forbidden_terms:
-            if term.lower() in text.lower():
-                found_terms.append(term)
-                
-        return found_terms
-    
     def _run_llm_verification(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run the LLM-based verification on the rationale.
+        Run the LLM-based verification on the classification.
         
         Args:
-            state: Current state with provisional rationale and transaction details
+            state: Current state with provisional classification and transaction details
             
         Returns:
-            Verification results
+            Verification results with a simplified structure.
         """
         if not self.llm:
             return {
-                "valid": False, 
+                "valid": False,
                 "issues": ["No LLM available for verification"],
-                "rationale": state.get("provisional_rationale", "Verification skipped: No LLM."),
-                "citations": []
+                "final_classification_label": state.get("provisional_label_name", ""),
             }
         
         # Prepare variables for the template
         inputs = {
-            "entries": state.get("entries", []),
-            "context": state.get("context"),
-            "adjustments": state.get("adjustments"),
-            "accounting_treatment": state.get("accounting_treatment"),
             "provisional_label_name": state.get("provisional_label_name", ""),
-            "provisional_rationale": state.get("provisional_rationale", ""),
             "retrieved_texts": state.get("retrieved_texts", [])[:5],  # Limit to avoid context overflow
         }
         
@@ -178,112 +129,90 @@ class VerifyNode:
         # Call the LLM
         try:
             result = chain.invoke(inputs)
-            # Ensure basic structure even if LLM output is partial but parsable
-            if "rationale" not in result:
-                result["rationale"] = ""
-            if "citations" not in result:
-                result["citations"] = []
-            if "issues" not in result:
-                result["issues"] = [] if result.get("valid") else ["Incomplete response from verifier LLM."]
-            return result
+
+            is_valid_from_llm = result.get("valid", False)
+            if isinstance(is_valid_from_llm, str):
+                is_valid_from_llm = is_valid_from_llm.lower() == 'true'
+            result["valid"] = bool(is_valid_from_llm)
+
+            if "final_classification_label" not in result:
+                result["final_classification_label"] = state.get("provisional_label_name", "")
+
+            issues_for_downstream = []
+            llm_issue_note = result.get("issue_note")
+
+            if llm_issue_note and isinstance(llm_issue_note, str) and llm_issue_note.strip():
+                issues_for_downstream.append(llm_issue_note)
+            
+            if not result["valid"] and not issues_for_downstream:
+                issues_for_downstream.append(
+                    "Verification LLM reported 'valid: false' but 'issue_note' was missing or empty."
+                )
+            
+            # Return a simplified structure
+            return {
+                "valid": result["valid"],
+                "final_classification_label": result["final_classification_label"],
+                "issues": issues_for_downstream
+            }
+
         except Exception as e:
             return {
                 "valid": False,
                 "issues": [f"Verification LLM error: {str(e)}"],
-                "rationale": state.get("provisional_rationale", "Error during LLM verification call."),
-                "citations": []
+                "final_classification_label": state.get("provisional_label_name", ""),
             }
     
     def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process the input state and verify the rationale.
+        Process the input state and verify the classification.
         
         Args:
-            state: Input state with provisional label and rationale
+            state: Input state with provisional label
             
         Returns:
-            Updated state with verification results
+            Updated state with verification results, focusing on validity and final label.
         """
-        # Make a copy to avoid modifying the input
         new_state = dict(state)
         
-        # Check if previous steps failed. If RationaleNode (or any earlier node) set valid=False,
-        # VerifyNode should not proceed with its specific logic and just return the state.
-        if not new_state.get("valid", False):
+        if not new_state.get("valid", False): # Check if prior nodes invalidated the state
+            # Ensure 'final_classification_label' exists if we are returning early due to prior invalidation
+            if "final_classification_label" not in new_state:
+                 new_state["final_classification_label"] = new_state.get("provisional_label_name", "")
+            # Ensure 'probs_vector' is preserved if it exists
+            if "probs_vector" not in new_state:
+                new_state["probs_vector"] = {} # Or some default if appropriate
             return new_state
         
-        # provisional_rationale and provisional_label_name are expected to be set by RationaleNode
-        # if the state is still valid at this point. An empty provisional_rationale is a valid input
-        # for verification (it will likely be found invalid by the verifier LLM, which is correct).
-        provisional_rationale = new_state.get("provisional_rationale", "")
-        # provisional_label_name = new_state.get("provisional_label_name", "") # This is used by _run_llm_verification
-        print(f"Provisional Rationale for {new_state.get('provisional_label_name')}: {provisional_rationale}")
+        provisional_label_name = new_state.get("provisional_label_name", "")
+        # print(f"VerifyNode: Provisional Label for verification: {provisional_label_name}")
 
-        # The block previously here for checking missing provisional_rationale or provisional_label_name
-        # has been removed. If RationaleNode failed to provide them due to its own input issues,
-        # it should have set new_state["valid"] = False, and this node would have returned early.
-
-        # Check for forbidden terms
-        rationale_to_verify = provisional_rationale
-        
-        forbidden_found = self._contains_forbidden_terms(rationale_to_verify)
-        
-        if forbidden_found:
-            new_state["valid"] = False
-            new_state["error_message"] = f"Rationale contains forbidden terms: {', '.join(forbidden_found)}"
-            new_state["retry_count"] = new_state.get("retry_count", 0) + 1
-            new_state["final_rationale"] = rationale_to_verify
-            new_state["sources"] = [] # No sources if forbidden terms found
-            return new_state
-        
-        # Run LLM verification
         verification_result = self._run_llm_verification(new_state)
         
-        verified_rationale = verification_result.get("rationale", "")
-        verified_citations = verification_result.get("citations", [])
-        verification_issues = verification_result.get("issues", [])
-
-        if verification_result.get("valid", False):
-            new_state["valid"] = True
-            verified_rationale_content = verification_result.get("rationale", "")
-            verified_citations_content = verification_result.get("citations", [])
-            verification_issues_content = verification_result.get("issues", [])
-
-            new_state["final_rationale"] = verified_rationale_content
-            new_state["sources"] = verified_citations_content
-            
-            original_rationale_text = new_state.get("provisional_rationale", "")
-            current_label_name = new_state.get('provisional_label_name', 'Unknown Label')
-
-            if verification_issues_content:
-                new_state["correction_notes"] = f"Provisional rationale for '{current_label_name}' was verified. Issues found/addressed by verifier: {'; '.join(verification_issues_content)}"
-            elif verified_rationale_content != original_rationale_text:
-                new_state["correction_notes"] = f"Provisional rationale for '{current_label_name}' was refined by verifier for clarity/accuracy."
-            else:
-                new_state["correction_notes"] = f"Provisional rationale for '{current_label_name}' was verified without changes."
-        else:
-            new_state["valid"] = False
-            # If LLM didn't provide issues, create a generic one.
-            error_message_parts = list(verification_result.get("issues", [])) # Start with issues from LLM
-            if not error_message_parts:
-                error_message_parts.append("Verification failed for unknown reasons or LLM did not provide details.")
-            
-            verified_rationale_content = verification_result.get("rationale", "") # Rationale from LLM, even if invalid
-            if not verified_rationale_content and "Missing Rationale" not in str(error_message_parts): # Check if already covered
-                 error_message_parts.append("Missing Rationale from verifier.")
-
-            # If the label is not N/A, and citations are missing, and the LLM hasn't already flagged it.
-            is_missing_citation_issue = any("citation" in issue.lower() for issue in error_message_parts)
-            verified_citations_content = verification_result.get("citations", [])
-            if new_state.get("provisional_label_name") and new_state.get("provisional_label_name") != "N/A" and not verified_citations_content and not is_missing_citation_issue:
-                error_message_parts.append("Missing AAOIFI Standard Citation from verifier.")
-
-            new_state["error_message"] = "Verification failed: " + "; ".join(error_message_parts)
-            new_state["retry_count"] = new_state.get("retry_count", 0) + 1
-            
-            # Store whatever the verifier LLM returned, even if it's an error or incomplete
-            new_state["final_rationale"] = verified_rationale_content 
-            new_state["sources"] = verified_citations_content
+        new_state["valid"] = verification_result.get("valid", False)
+        new_state["final_classification_label"] = verification_result.get("final_classification_label", provisional_label_name)
         
-        print(f"Final Rationale for {new_state.get('provisional_label_name')}: {new_state.get('final_rationale')}")
+        # Remove old explanation/rationale fields
+        new_state.pop("final_explanation", None)
+        new_state.pop("sources", None)
+        new_state.pop("correction_notes", None)
+        new_state.pop("explanation", None) # from older structure
+        new_state.pop("citations", None) # from older structure
+
+        if not new_state["valid"]:
+            error_messages = verification_result.get("issues", ["Verification failed for unspecified reasons."])
+            new_state["error_message"] = "Verification failed: " + "; ".join(error_messages)
+            new_state["retry_count"] = new_state.get("retry_count", 0) + 1
+            # print(f"VerifyNode: Verification failed for {provisional_label_name}. Reason: {new_state['error_message']}")
+        # else:
+            # print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
+
+        # Ensure probs_vector is preserved or initialized
+        if "probs_vector" not in new_state:
+            new_state["probs_vector"] = {} # Or handle as per how it's generated upstream
+
+        # Clean up any other potential explanation-related fields that might be in the state
+        # from previous nodes, if their names are known.
+        # For now, the specific ones are popped above.
+
         return new_state

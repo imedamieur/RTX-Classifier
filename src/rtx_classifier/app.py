@@ -143,34 +143,34 @@ if st.button("Run Classifier", key="run_classifier_button"):
                 valid_input = True
 
     if valid_input and json_data_to_process is not None:
-        st.subheader("Classification Result:")
+        # st.subheader("Classification Result:") # Commented out
         with st.spinner("Running classifier..."):
             try:
                 result = run_classifier(json_data_to_process, model_provider=st.session_state.model_provider, model_name=st.session_state.model_name)
                 
-                if "rationale" in result:
-                    st.write("**Rationale:**")
-                    st.write(result["rationale"])
+                # if "rationale" in result: # Commented out
+                #     st.write("**Rationale:**")
+                #     st.write(result["rationale"])
 
-                if "sources" in result and result["sources"]:
-                    st.write("**Relevant FAS Documents:**")
-                    for source in result["sources"]:
-                        st.markdown(f"- {source}") 
-                else:
-                    st.write("No specific FAS documents identified.")
+                # if "sources" in result and result["sources"]: # Commented out
+                #     st.write("**Relevant FAS Documents:**")
+                #     for source in result["sources"]:
+                #         st.markdown(f"- {source}") 
+                # else:
+                #     st.write("No specific FAS documents identified.")
 
                 if "prob_vector" in result and result["prob_vector"]:
-                    st.write("**Probability Vector:**")
+                    # st.write("**Probability Vector:**") # Commented out
                     if isinstance(result["prob_vector"], list) and len(result["prob_vector"]) == len(LABELS):
                         for i, label_code in enumerate(LABELS):
                             full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
                             probability = result["prob_vector"][i]
                             st.markdown(f"- **{full_name} ({label_code})**: {probability:.4f}")
                     else:
-                        st.write("Probability vector format is unexpected or does not match known labels. Displaying raw vector:")
+                        # st.write("Probability vector format is unexpected or does not match known labels. Displaying raw vector:") # Commented out
                         st.json(result["prob_vector"])
-                else:
-                    st.write("No probability vector provided in the result.")
+                # else: # Commented out
+                    # st.write("No probability vector provided in the result.")
                 
                 # Optionally display full result for debugging
                 # st.write("**Full Result (for debugging):**")

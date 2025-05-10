@@ -47,15 +47,18 @@ class ClassifierState:
     retrieved_texts: List[str] = field(default_factory=list)
     logits: List[List[float]] = field(default_factory=list) # From ClassifyFanOutNode
     avg_logits: List[float] = field(default_factory=list) # From MajorityVoteNode
-    rationales: List[str] = field(default_factory=list)
-    provisional_label: Optional[int] = None
+    provisional_label: Optional[int] = None # Retained as it might be used by calibration/voting before verification
+    final_classification_label: Optional[str] = None # Added by VerifyNode
     retry_count: int = 0
     
-    # Final output
+    # Final output focus
     prob_vector: List[float] = field(default_factory=list)
-    final_rationale: Optional[str] = None
-    sources: List[str] = field(default_factory=list)
-    correction_notes: Optional[str] = None # Added for verifier corrections/issues
+    
+    # Removed fields:
+    # sources: List[str] = field(default_factory=list)
+    # correction_notes: Optional[str] = None
+    # provisional_explanation: Optional[str] = None (was never formally here, but as a note)
+    # final_explanation: Optional[str] = None (was never formally here, but as a note)
     
     # Make the dataclass fully compatible with newer LangGraph versions
     def __iter__(self) -> Iterator[Tuple[str, Any]]:
@@ -326,7 +329,7 @@ def run_classifier(
                 print(f"All execution attempts failed. Last error: {str(e3)}")
                 return {
                     "prob_vector": [],
-                    "rationale": f"Error executing graph: {str(e3)}",
+                    "explanation": f"Error executing graph: {str(e3)}",
                     "sources": []
                 }
     except Exception as e:
@@ -341,7 +344,7 @@ def run_classifier(
             print(f"All execution attempts failed. Last error: {str(e3)}")
             return {
                 "prob_vector": [],
-                "rationale": f"Error executing graph: {str(e3)}",
+                "explanation": f"Error executing graph: {str(e3)}",
                 "sources": []
             }
     
@@ -354,29 +357,33 @@ def run_classifier(
             # If conversion fails, create a minimal valid result
             return {
                 "prob_vector": [],
-                "rationale": f"Error processing result: {str(e)}",
+                "explanation": f"Error processing result: {str(e)}",
                 "sources": []
             }
     
     # Debug the final result
-    print(f"Final result keys: {list(result.keys())}")
-    print(f"Final result valid: {result.get('valid', False)}")
+    # print(f"Final result keys: {list(result.keys())}")
+    # print(f"Final result valid: {result.get('valid', False)}")
     
-    # Determine rationale for output
-    # Prioritize final_rationale if it's set (even if it's an empty string).
-    # Otherwise, use error_message if available, or a default.
-    output_rationale = result.get("final_rationale")
-    if output_rationale is None:  # final_rationale was not set or was explicitly None
-        output_rationale = result.get("error_message")
-        if output_rationale is None:  # error_message was also not set or was None
-            output_rationale = "No rationale generated"
-    
-    # Return the final output with improved error handling
-    return {
-        "prob_vector": result.get("prob_vector", []),
-        "rationale": output_rationale,
-        "sources": result.get("sources", []),
+    # Prepare the final output based on the simplified requirements
+    output_prob_vector = result.get("prob_vector", [])
+    output_valid = result.get("valid", False)
+    output_error_message = result.get("error_message")
+
+    if not isinstance(output_prob_vector, list) or len(output_prob_vector) != 5:
+        output_prob_vector = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
+        output_valid = False
+        if not output_error_message:
+            output_error_message = "Output probability vector malformed or missing."
+
+    final_output = {
+        "prob_vector": output_prob_vector,
+        "valid": output_valid
     }
+    if not output_valid:
+        final_output["error_message"] = output_error_message or "Classification failed for an unspecified reason."
+    
+    return final_output
 
 
 import logging

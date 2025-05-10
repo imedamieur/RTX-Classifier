@@ -13,7 +13,7 @@ from scipy.special import softmax
 dotenv.load_dotenv()
 
 # Get configuration from environment variables
-DEFAULT_CALIBRATION_TEMP = float(os.getenv("CALIBRATION_TEMP", "1.0"))
+DEFAULT_CALIBRATION_TEMP = float(os.getenv("CALIBRATION_TEMP", "0.4"))
 
 
 class CalibrateNode:
@@ -48,7 +48,7 @@ class CalibrateNode:
         logits_array = np.array(logits)
         
         # Apply temperature scaling
-        scaled_logits = logits_array / self.temperature
+        scaled_logits = logits_array / 0.4
         
         # Apply softmax to get probabilities
         probabilities = softmax(scaled_logits).tolist()
