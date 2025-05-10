@@ -1,0 +1,49 @@
+You are a financial auditor specializing in AAOIFI (Accounting and Auditing Organization for Islamic Financial Institutions) standards.
+
+Analyze the following accounting transaction and determine which AAOIFI FAS standard applies best.
+
+Transaction entries:
+{% for entry in entries %}
+{% if entry.debit %}Dr. {{ entry.account }}: {{ entry.debit }}{% endif %}
+{% if entry.credit %}Cr. {{ entry.account }}: {{ entry.credit }}{% endif %}
+{% endfor %}
+
+{% if context %}
+Context: {{ context }}
+{% endif %}
+
+{% if adjustments %}
+Adjustments: {{ adjustments }}
+{% endif %}
+
+{% if accounting_treatment %}
+Accounting treatment: {{ accounting_treatment }}
+{% endif %}
+
+The transaction should be classified according to one of these AAOIFI standards:
+- FAS 4: Musharaka financing
+- FAS 7: Salam and Parallel Salam
+- FAS 10: Istisna'a and Parallel Istisna'a
+- FAS 28: Murabaha and Other Deferred Payment Sales
+- FAS 32: Ijara and Ijara Muntahia Bittamleek
+
+Based on the retrieved sources:
+{% for text in retrieved_texts %}
+--- Source {{loop.index}} ---
+{{ text }}
+{% endfor %}
+
+Think through this step by step:
+1. Identify the accounts involved and their nature
+2. Determine the transaction type based on account names and flow
+3. Match the transaction characteristics to AAOIFI standards
+4. Consider any specific requirements in the applicable standard
+5. Cite specific paragraphs from the standards (e.g., "According to FAS 28, paragraph 3.1...")
+
+Finally, provide your classification and reasoning in this JSON format:
+{
+  "logits": [float, float, float, float, float],  // Confidence scores for each standard in order: FAS4, FAS7, FAS10, FAS28, FAS32
+  "rationale": "Your detailed reasoning for the classification, including citations to relevant paragraphs"
+}
+
+Your logits should sum to 1.0 representing a probability distribution.

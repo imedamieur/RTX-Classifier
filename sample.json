@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "account": "GreenTech Equity",
+      "debit": 1750000,
+      "credit": 0
+    },
+    {
+      "account": "Cash",
+      "debit": 0,
+      "credit": 1750000
+    }
+  ],
+  "context": "GreenTech exits in Year 3, and Al Baraka Bank buys out its stake.",
+  "adjustments": "Buyout Price: $1,750,000; Bank Ownership: 100%.",
+  "accounting_treatment": "Derecognition of GreenTech's equity; recognition of acquisition expense."
+}
