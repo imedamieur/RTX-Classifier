@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "account": "Accounts Payable",
+      "debit": 1000000,
+      "credit": 0
+    },
+    {
+      "account": "Work in Progress",
+      "debit": 0,
+      "credit": 1000000
+    }
+  ],
+  "context": "The client cancels the change order, reverting to the original contract terms.",
+  "adjustments": "Revised Contract Value: back to 5,000,000; Timeline restored: 2 years.",
+  "accounting_treatment": "Adjustment of revenue and cost projections; reversal of additional cost accruals."
+}

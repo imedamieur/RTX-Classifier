@@ -14,6 +14,7 @@ from chromadb.utils import embedding_functions
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import dotenv
 
 # Load environment variables
@@ -143,18 +144,27 @@ def get_embedding_function(name: str = "openai", **kwargs):
     """
     if name == "openai":
         # Get API key from environment or kwargs
-        api_key = kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OpenAI API key is required for OpenAI embeddings")
+         #api_key = kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+      #  if not api_key:
+          #  raise ValueError("OpenAI API key is required for OpenAI embeddings")
         
         # Get model name from environment or default
-        model_name = kwargs.get("model_name") or os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+     #   model_name = kwargs.get("model_name") or os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         
         # Return ChromaDB's OpenAI embedding function
-        return embedding_functions.OpenAIEmbeddingFunction(
-            api_key=api_key,
-            model_name=model_name
-        )
+       # return embedding_functions.OpenAIEmbeddingFunction(
+           # api_key=api_key,
+          #  model_name=model_name
+       # )
+       api_key = os.environ.get("GOOGLE_API_KEY")
+       return embedding_functions.GoogleGenerativeAiEmbeddingFunction(
+           api_key=api_key,
+           model_name="models/embedding-001",
+           task_type="retrieval_document"
+       )
+       #embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", task_type="retrieval_document")
+      # return embeddings
+
     elif name == "default":
         # Use ChromaDB's default embedding function
         return embedding_functions.DefaultEmbeddingFunction()
