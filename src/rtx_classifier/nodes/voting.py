@@ -70,7 +70,7 @@ class MajorityVoteNode:
         """
         # Make a copy to avoid modifying the input
         new_state = dict(state)
-        print(f"DEBUG: MajorityVoteNode: Entry state valid: {new_state.get('valid')}")
+        print(f"DEBUG: MajorityVoteNode: Entry logits: {new_state.get('logits')}")
         # print(f"DEBUG: MajorityVoteNode: Entry state logits: {new_state.get('logits')}") # Can be verbose
 
         # Check if previous steps failed

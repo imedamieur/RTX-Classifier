@@ -1,17 +1,17 @@
 {
   "entries": [
     {
-      "account": "Allowance for Impairment",
-      "debit": 500000,
+      "account": "GreenTech Equity",
+      "debit": 1750000,
       "credit": 0
     },
     {
-      "account": "Provision for Losses",
+      "account": "Cash",
       "debit": 0,
-      "credit": 500000
+      "credit": 1750000
     }
   ],
-  "context": "The client pays all outstanding amounts on time, reducing expected losses.",
-  "adjustments": "Loss provision reversed; recognized revenue adjusted.",
-  "accounting_treatment": "Reduction in impairment expense; recognition of full contract revenue."
+  "context": "GreenTech exits in Year 3, and Al Baraka Bank buys out its stake.",
+  "adjustments": "Buyout Price: $1,750,000; Bank Ownership: 100%.",
+  "accounting_treatment": "Derecognition of GreenTech’s equity; recognition of acquisition expense."
 }

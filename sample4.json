@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "account": "Allowance for Impairment",
+      "debit": 500000,
+      "credit": 0
+    },
+    {
+      "account": "Provision for Losses",
+      "debit": 0,
+      "credit": 500000
+    }
+  ],
+  "context": "The client pays all outstanding amounts on time, reducing expected losses; This restores revenue after full payment.",
+  "adjustments": "Loss provision reversed; recognized revenue adjusted.",
+  "accounting_treatment": "Reduction in impairment expense; recognition of full contract revenue."
+}

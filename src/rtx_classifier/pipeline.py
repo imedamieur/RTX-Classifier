@@ -26,7 +26,7 @@ from rtx_classifier.nodes.compose import ComposeNode
 # Get configuration from environment variables
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
 DEFAULT_MODEL_PROVIDER = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
-DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 FALLBACK_TEMPERATURE = float(os.getenv("FALLBACK_TEMPERATURE", "0.3"))
 CALIBRATION_TEMP = float(os.getenv("CALIBRATION_TEMP", "0.7"))
 TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "10"))
@@ -166,7 +166,7 @@ def get_llm(
         return ChatGoogleGenerativeAI(
             google_api_key=google_api_key,
             model=effective_model_name,
-            temperature=temperature,
+            temperature=0.4,
         )
     
     else:
@@ -212,7 +212,7 @@ def build_classifier_graph(
         model_name=model_name,
         openai_api_key=openai_api_key,
         google_api_key=google_api_key,
-        temperature=temperature,
+        temperature= temperature,
     )
     
     # Initialize nodes
@@ -374,6 +374,7 @@ def run_classifier(
     output_valid = result.get("valid", False)
     output_error_message = result.get("error_message")
     rationale = result.get("final_rationale", None)
+    label = result.get("final_classification_label", None)
 
     if not isinstance(output_prob_vector, list) or len(output_prob_vector) != 5:
         output_prob_vector = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
@@ -383,6 +384,7 @@ def run_classifier(
 
     final_output = {
         "prob_vector": output_prob_vector,
+        "label": label,
         "valid": output_valid,
         "rationale": rationale,
         "error_message": None,  # Initialize to None, will be set if invalid

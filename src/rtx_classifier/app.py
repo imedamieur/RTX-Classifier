@@ -147,18 +147,24 @@ if st.button("Run Classifier", key="run_classifier_button"):
         with st.spinner("Running classifier..."):
             try:
                 result = run_classifier(json_data_to_process, model_provider=st.session_state.model_provider, model_name=st.session_state.model_name)
-                
-                # if "rationale" in result: # Commented out
+                  # if "rationale" in result: # Commented out
                 #     st.write("**Rationale:**")
-                #     st.write(result["rationale"])
-
-                # if "sources" in result and result["sources"]: # Commented out
+                #     st.write(result["rationale"])                # if "sources" in result and result["sources"]: # Commented out
                 #     st.write("**Relevant FAS Documents:**")
                 #     for source in result["sources"]:
                 #         st.markdown(f"- {source}") 
                 # else:
                 #     st.write("No specific FAS documents identified.")
-
+                
+                if "label" in result and result["label"]:
+                    label_code = result["label"]
+                    full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
+                    st.subheader(f"Classification: {full_name} ({label_code})")
+                
+                if "rationale" in result and result["rationale"]:
+                    st.subheader("Rationale:")
+                    st.write(result["rationale"])
+                
                 if "prob_vector" in result and result["prob_vector"]:
                     # st.write("**Probability Vector:**") # Commented out
                     if isinstance(result["prob_vector"], list) and len(result["prob_vector"]) == len(LABELS):

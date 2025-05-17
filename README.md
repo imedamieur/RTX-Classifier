@@ -29,6 +29,13 @@ Create a `.env` file in the project root with the following variables:
 
 ```
 OPENAI_API_KEY=your_openai_api_key
+COHERE_API_KEY=your_cohere_api_key  # Optional, for improved retrieval with reranking
+```
+
+Additional optional environment variables:
+```
+USE_RERANKER=true                  # Enable/disable Cohere's reranking (default: true)
+RERANKER_MODEL=rerank-english-v3.0 # Cohere reranker model to use
 ```
 
 ## Usage

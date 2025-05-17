@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "account": "Bad Debt Expense",
+      "debit": 500000,
+      "credit": 0
+    },
+    {
+      "account": "Accounts Receivable",
+      "debit": 0,
+      "credit": 500000
+    }
+  ],
+  "context": "Buyer defaults, stopping project completion.",
+  "adjustments": "Recognized Revenue: $6,500,000; Impairment of Receivables: $500,000.",
+  "accounting_treatment": "Recognition of bad debt; adjustment of work-in-progress valuation."
+}

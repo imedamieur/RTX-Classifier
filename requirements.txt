@@ -7,6 +7,7 @@ langchain-community>=0.0.13
 pypdf>=3.17.1
 numpy
 scipy
+cohere>=5.0.0
 pytest
 python-dotenv
 langchain-text-splitters>=0.0.1

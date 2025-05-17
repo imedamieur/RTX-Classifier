@@ -35,6 +35,7 @@ class ComposeNode:
         is_valid = new_state.get("valid", False)
         error_msg_to_propagate = new_state.get('error_message')
         rationale = new_state.get("final_rationale", None)
+        label = new_state.get("final_classification_label", None)
 
 
 
@@ -50,6 +51,7 @@ class ComposeNode:
             "prob_vector": prob_vector_to_return,
             "valid": is_valid,
             "rationale": rationale,
+            "label": label,	
         }
 
         if not is_valid:
@@ -72,6 +74,7 @@ class ComposeNode:
 
         new_state["prob_vector"] = final_output["prob_vector"]
         new_state["valid"] = final_output["valid"]
+        new_state["final_classification_label"] = final_output["label"]
         new_state["final_rationale"] = final_output["rationale"]
         # If there is an error message in the final output, propagate it to the new state
         if "error_message" in final_output:

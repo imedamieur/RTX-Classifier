@@ -13,6 +13,7 @@ dotenv.load_dotenv()
 
 import chromadb
 import numpy as np
+import cohere
 from langchain_openai import OpenAIEmbeddings
 
 from rtx_classifier.vectorstore import get_or_create_vectorstore, get_embedding_function
@@ -21,6 +22,9 @@ from rtx_classifier.vectorstore import get_or_create_vectorstore, get_embedding_
 DEFAULT_COLLECTION_NAME = os.getenv("COLLECTION_NAME", "aaoifi_standards")
 DEFAULT_PERSIST_DIRECTORY = os.getenv("PERSIST_DIRECTORY", "./vectorstore")
 TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "10"))
+USE_RERANKER = os.getenv("USE_RERANKER", "true").lower() == "true"
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "rerank-english-v3.0")
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
 
 
 @dataclass
@@ -35,7 +39,8 @@ class RetrievedDocument:
 class RetrieveNode:
     """
     Retrieval node that performs semantic search over AAOIFI standards.
-    Uses ChromaDB as the vector database.
+    Uses ChromaDB as the vector database and optionally Cohere's reranker
+    for improved results quality.
     """
     
     def __init__(
@@ -45,6 +50,7 @@ class RetrieveNode:
         persist_directory: Optional[str] = None,
         embedding_function_name: str = "openai",
         top_k: int = None,
+        use_reranker: bool = None,
     ):
         """
         Initialize the RetrieveNode.
@@ -55,6 +61,7 @@ class RetrieveNode:
             persist_directory: Directory to persist the database
             embedding_function_name: Name of the embedding function to use
             top_k: Number of documents to retrieve
+            use_reranker: Whether to use Cohere's reranker for improved results
         """
         self.docs_dir = docs_dir
         self.collection_name = collection_name or DEFAULT_COLLECTION_NAME
@@ -67,10 +74,12 @@ class RetrieveNode:
             
         self.embedding_function_name = embedding_function_name
         self.top_k = top_k or TOP_K_RETRIEVAL
+        self.use_reranker = use_reranker if use_reranker is not None else USE_RERANKER
         self._client = None
         self._collection = None
         self._embeddings = None
         self._langchain_embeddings = None
+        self._cohere_client = None
     
     def _get_collection(self):
         """Initialize and return the ChromaDB collection."""
@@ -100,6 +109,18 @@ class RetrieveNode:
             model_name = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
             self._langchain_embeddings = OpenAIEmbeddings(model=model_name)
         return self._langchain_embeddings
+    
+    def _get_cohere_client(self):
+        """Initialize and return the Cohere client."""
+        if self._cohere_client is None:
+            if not COHERE_API_KEY:
+                print("Warning: COHERE_API_KEY environment variable is not set.")
+                print("Using a fake client for demonstration purposes only.")
+                # Create a mock client for demonstration
+                self._cohere_client = None
+            else:
+                self._cohere_client = cohere.Client(COHERE_API_KEY)
+        return self._cohere_client
     
     def _embed_query(self, query: str) -> List[float]:
         """
@@ -211,8 +232,66 @@ class RetrieveNode:
                 score=score
             )
             documents.append(doc)
+        
+        # Apply Cohere's reranking if enabled
+        if self.use_reranker:
+            documents = self._apply_reranking(query_text, documents)
+            
+            # Sort documents by score in descending order after reranking
+            documents.sort(key=lambda x: x.score, reverse=True)
             
         return documents
+    
+    def _apply_reranking(self, query_text: str, documents: List[RetrievedDocument]) -> List[RetrievedDocument]:
+        """
+        Apply Cohere's reranking to improve document relevance.
+        
+        Args:
+            query_text: The query text
+            documents: List of retrieved documents
+            
+        Returns:
+            Reranked list of documents
+        """
+        if not self.use_reranker or not documents:
+            return documents
+            
+        try:
+            co = self._get_cohere_client()
+            
+            # Extract document texts for reranking
+            texts = [doc.text for doc in documents]
+            
+            # Use Cohere's reranker
+            rerank_results = co.rerank(
+                query=query_text,
+                documents=texts,
+                model=RERANKER_MODEL,
+                top_n=len(texts)  # Get all results reranked
+            )
+            
+            # Create a new list of documents based on reranking
+            reranked_docs = []
+            for result in rerank_results.results:
+                # Find the original document matching this reranked result
+                orig_doc_idx = result.index
+                orig_doc = documents[orig_doc_idx]
+                
+                # Create a new document with the updated score
+                reranked_doc = RetrievedDocument(
+                    text=orig_doc.text,
+                    standard=orig_doc.standard,
+                    paragraph=orig_doc.paragraph,
+                    score=result.relevance_score  # Use Cohere's relevance score
+                )
+                reranked_docs.append(reranked_doc)
+                
+            return reranked_docs
+            
+        except Exception as e:
+            # Log the error but continue with the original documents
+            print(f"Reranker error: {str(e)}")
+            return documents
     
     def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -274,7 +353,15 @@ class RetrieveNode:
             
             # Query the vector store
             documents = self._query_vectorstore(query)
-            print(f"Retrieved documents: {documents}")
+            
+            reranking_status = "with reranking" if self.use_reranker else "without reranking"
+            print(f"Retrieved documents ({reranking_status}): {len(documents)} results")
+            
+            # Add debug information about top results
+            if documents:
+                print(f"Top result: {documents[0].standard} ¶{documents[0].paragraph} (score: {documents[0].score:.4f})")
+                if len(documents) > 1:
+                    print(f"Second result: {documents[1].standard} ¶{documents[1].paragraph} (score: {documents[1].score:.4f})")
             
             # Extract texts and add to state
             new_state["retrieved_texts"] = [doc.text for doc in documents]
@@ -283,6 +370,9 @@ class RetrieveNode:
             new_state["sources"] = [ # Changed "retrieved_sources" to "sources"
                 f"{doc.standard} ¶{doc.paragraph}" for doc in documents
             ]
+            
+            # Store scores for evaluation/debugging
+            new_state["retrieval_scores"] = [doc.score for doc in documents]
             
             # If documents list is empty, retrieved_texts and sources will correctly be empty.
             # This is a valid outcome (no results found) and not an error in itself.
