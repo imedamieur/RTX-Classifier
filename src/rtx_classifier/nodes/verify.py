@@ -1,3 +1,4 @@
+# filepath: d:\Cat2\src\rtx_classifier\nodes\verify.py
 """
 VerifyNode for the RTX Classifier.
 
@@ -26,12 +27,14 @@ DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
 
 class VerifyNode:
     """
-    VerifyNode that verifies the classification.
+    VerifyNode that verifies the classification using the ReAct technique.
     
     The verification process ensures that:
     1. The classification cites only content from retrieved texts
     2. The classification contains no forbidden terms
     3. The classification properly supports the classification
+    
+    The ReAct approach enables step-by-step reasoning and explanation for the verification decision.
     """
     
     def __init__(
@@ -69,28 +72,36 @@ class VerifyNode:
                 )
     
     def _get_default_template(self) -> ChatPromptTemplate:
-        """Get default template for verification."""
+        """Get default template for verification using ReAct technique."""
         template = """\
         You are an expert in Islamic financial accounting and reporting standards, specifically AAOIFI FAS.
-        Your task is to verify a provisional classification of a financial transaction or event.
+        Your task is to verify a provisional classification of a financial transaction or event using a step-by-step reasoning process (ReAct approach).
         
         The user will provide:
         1. Retrieved context from AAOIFI FAS documents.
         2. A provisional classification label out of these five Financial Accounting Standards: FAS4, FAS7, FAS10, FAS28, FAS32.
         - FAS 4: Musharaka financing
         - FAS 7: Salam and Parallel Salam
-        - FAS 10: Istisna'a and Parallel Istisna'a
+        - FAS 10: Istisna\'a and Parallel Istisna\'a
         - FAS 28: Murabaha and Other Deferred Payment Sales
         - FAS 32: Ijara and Ijara Muntahia Bittamleek
-        The provisional classification label is based on the retrieved context.	
+        The provisional classification label is based on the retrieved context.
         
-        You need to perform the following checks:
-        1. Source Adherence: Ensure the provisional classification is plausible based *only* on the provided "Retrieved Context".
-        2. Classification Support: Critically evaluate if the retrieved context supports the provisional classification label.
+        IMPORTANT NOTE: You do NOT need to find direct and explicit presence of specific terms and conditions related to that accounting standard in the retrieved context. The verification should focus on ensuring that the classification is not completely wrong or without any basis at all. If the retrieved context supports even a general association with the chosen standard, that is sufficient to consider the classification valid.
+        
+        Please follow this step-by-step reasoning process:
+        
+        Step 1: Analyze the retrieved context - summarize the key points from the provided texts.
+        Step 2: Identify the key characteristics of the provisional classification label.
+        Step 3: Compare these characteristics with the content in the retrieved context.
+        Step 4: Evaluate if there are any inconsistencies or missing information. Note that you don\'t need perfect alignment - just ensure the classification has some reasonable basis.
+        Step 5: Make a determination on whether the provisional classification is supported by the context. Be lenient - only reject classifications that are clearly wrong.
+        Step 6: Provide a detailed explanation of your reasoning process and final decision.
         
         Based on your verification, provide a JSON response with the following fields:
         - "valid": (boolean) true if the provisional classification is supported by the context. False otherwise.
         - "final_classification_label": (string) The verified classification label. This should usually be the same as the provisional_label. If the provisional label is fundamentally unsupported, return the original provisional_label and mark as invalid.
+        - "verification_explanation": (string) A detailed explanation of your reasoning process and why you accepted or rejected the classification. This should follow the ReAct pattern of step-by-step reasoning.
         - "issue_note": (string, optional) If "valid" is false, provide a brief note on the primary issue (e.g., "Context does not support label.", "Label seems unrelated to context."). If "valid" is true, this can be omitted.
         
         The provisional classification label is: {{ provisional_label_name }}
@@ -108,19 +119,20 @@ class VerifyNode:
     
     def _run_llm_verification(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Run the LLM-based verification on the classification.
+        Run the LLM-based verification on the classification using ReAct.
         
         Args:
             state: Current state with provisional classification and transaction details
             
         Returns:
-            Verification results with a simplified structure.
+            Verification results with a simplified structure including the explanation.
         """
         if not self.llm:
             return {
                 "valid": False,
                 "issues": ["No LLM available for verification"],
                 "final_classification_label": state.get("provisional_label_name", ""),
+                "verification_explanation": "Verification could not be performed as no LLM was available."
             }
         
         # Prepare variables for the template
@@ -144,6 +156,9 @@ class VerifyNode:
             if "final_classification_label" not in result:
                 result["final_classification_label"] = state.get("provisional_label_name", "")
 
+            # Extract the explanation from the ReAct process
+            verification_explanation = result.get("verification_explanation", "No detailed explanation provided.")
+
             issues_for_downstream = []
             llm_issue_note = result.get("issue_note")
 
@@ -155,11 +170,12 @@ class VerifyNode:
                     "Verification LLM reported 'valid: false' but 'issue_note' was missing or empty."
                 )
             
-            # Return a simplified structure
+            # Return a structure including the verification explanation
             return {
                 "valid": result["valid"],
                 "final_classification_label": result["final_classification_label"],
-                "issues": issues_for_downstream
+                "issues": issues_for_downstream,
+                "verification_explanation": verification_explanation
             }
 
         except Exception as e:
@@ -167,6 +183,7 @@ class VerifyNode:
                 "valid": False,
                 "issues": [f"Verification LLM error: {str(e)}"],
                 "final_classification_label": state.get("provisional_label_name", ""),
+                "verification_explanation": f"Error during verification: {str(e)}"
             }
     
     def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -177,7 +194,7 @@ class VerifyNode:
             state: Input state with provisional label
             
         Returns:
-            Updated state with verification results, focusing on validity and final label.
+            Updated state with verification results, focusing on validity, final label, and explanation.
         """
         new_state = dict(state)
     
@@ -198,24 +215,29 @@ class VerifyNode:
         new_state["valid"] = verification_result.get("valid", False)
         new_state["final_classification_label"] = verification_result.get("final_classification_label", provisional_label_name)
         
+        # Add the detailed verification explanation to the state
+        new_state["verification_explanation"] = verification_result.get("verification_explanation", "")
+        
         provisional_rationale = new_state.get("provisional_rationale", "")
-        print(f"DEBUGAAAAA: VerifyNode: Provisional rationale: {provisional_rationale}")
-
+        
         if not new_state["valid"]:
             error_messages = verification_result.get("issues", ["Verification failed for unspecified reasons."])
             new_state["error_message"] = "Verification failed: " + "; ".join(error_messages)
             new_state["retry_count"] = new_state.get("retry_count", 0) + 1
-            # print(f"VerifyNode: Verification failed for {provisional_label_name}. Reason: {new_state['error_message']}")
         else:
-            new_state["final_rationale"] = provisional_rationale
+            # If verification is successful, use the detailed explanation as the final rationale
+            if new_state["verification_explanation"]:
+                new_state["final_rationale"] = new_state["verification_explanation"]
+            else:
+                new_state["final_rationale"] = provisional_rationale
+                
             print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
+        
+        # For debugging - show the verification explanation
+        print(f"VerifyNode: Verification explanation: {new_state.get('verification_explanation', '')[:100]}...")
 
         # Ensure probs_vector is preserved or initialized
         if "probs_vector" not in new_state:
             new_state["probs_vector"] = {} # Or handle as per how it's generated upstream
-
-        # Clean up any other potential explanation-related fields that might be in the state
-        # from previous nodes, if their names are known.
-        # For now, the specific ones are popped above.
      
         return new_state

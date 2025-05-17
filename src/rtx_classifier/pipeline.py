@@ -53,6 +53,7 @@ class ClassifierState:
     provisional_label_name: Optional[str] = None # Added for clarity
     final_classification_label: Optional[str] = None # Added by VerifyNode
     retry_count: int = 0
+    verification_explanation : Optional[str] = None # Added by VerifyNode
     final_rationale: Optional[str] = None # Added by VerifyNode
     
     # Final output focus

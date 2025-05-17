@@ -26,25 +26,32 @@ class MajorityVoteNode:
         self.labels = labels or LABELS
     
     def _average_logits(self, logits_list: List[List[float]]) -> List[float]:
-        """
-        Average multiple sets of logits.
-        
-        Args:
-            logits_list: List of logits arrays
-            
-        Returns:
-            Average logits
-        """
+    
+        n_classes = len(self.labels)
+
+        # 0️⃣  Empty guard → uniform distribution
         if not logits_list:
-            return [1.0 / len(self.labels)] * len(self.labels)
-        
-        # Convert to numpy array
-        logits_array = np.array(logits_list)
-        
-        # Average across first dimension
-        avg_logits = np.mean(logits_array, axis=0).tolist()
-        
-        return avg_logits
+            return [1.0 / n_classes] * n_classes
+
+        # Hyper-parameters (use instance attrs if they exist, else defaults)
+        beta   = getattr(self, "beta_temp",     1.3)   # >1  => flatter
+        eps    = getattr(self, "epsilon_floor", 0.02)  # small positive floor
+
+        # 1️⃣  Mean of logits across runs
+        mean_logits = np.mean(np.array(logits_list), axis=0)
+
+        # Safety: clamp to avoid log(0)
+        mean_logits = np.clip(mean_logits, 1e-9, None)
+
+        # 2️⃣  Temperature scaling via softmax
+        scaled = np.exp(np.log(mean_logits) / beta)
+        probs  = scaled / scaled.sum()
+
+        # 3️⃣  ε-floor smoothing
+        probs  = probs + eps
+        probs  = probs / probs.sum()
+
+        return probs.tolist()
     
     def _get_max_label_index(self, logits: List[float]) -> int:
         """
