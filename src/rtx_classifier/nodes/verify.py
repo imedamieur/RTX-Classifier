@@ -78,8 +78,9 @@ class VerifyNode:
         Your task is to verify a provisional classification of a financial transaction or event using a step-by-step reasoning process (ReAct approach).
         
         The user will provide:
-        1. Retrieved context from AAOIFI FAS documents.
-        2. A provisional classification label out of these five Financial Accounting Standards: FAS4, FAS7, FAS10, FAS28, FAS32.
+        1. The original query describing a financial transaction or situation that needs classification.
+        2. Retrieved context from AAOIFI FAS documents.
+        3. A provisional classification label out of these five Financial Accounting Standards: FAS4, FAS7, FAS10, FAS28, FAS32.
         - FAS 4: Musharaka financing
         - FAS 7: Salam and Parallel Salam
         - FAS 10: Istisna\'a and Parallel Istisna\'a
@@ -91,26 +92,37 @@ class VerifyNode:
         
         Please follow this step-by-step reasoning process:
         
-        Step 1: Analyze the retrieved context - summarize the key points from the provided texts.
-        Step 2: Identify the key characteristics of the provisional classification label.
-        Step 3: Compare these characteristics with the content in the retrieved context.
-        Step 4: Evaluate if there are any inconsistencies or missing information. Note that you don\'t need perfect alignment - just ensure the classification has some reasonable basis.
-        Step 5: Make a determination on whether the provisional classification is supported by the context. Be lenient - only reject classifications that are clearly wrong.
-        Step 6: Provide a detailed explanation of your reasoning process and final decision.
+        Step 1: First, analyze the original query to understand what financial transaction or situation needs to be classified.
+        Step 2: Based on the query alone, consider which FAS standard(s) might be appropriate classifications. Note any alternative standards that could potentially apply.
+        Step 3: Analyze the retrieved context - summarize the key points from the provided texts that are relevant to the query.
+        Step 4: Identify the key characteristics of the provisional classification label.
+        Step 5: Compare these characteristics with both the query details and the content in the retrieved context.
+        Step 6: Evaluate if there are any inconsistencies or missing information. Note that you don\'t need perfect alignment - just ensure the classification has some reasonable basis for the specific query.
+        Step 7: Consider whether any alternative standards identified in Step 2 might be more appropriate than the provisional classification.
+        Step 8: Make a determination on whether the provisional classification is appropriate for the query and supported by the context. Be lenient - only reject classifications that are clearly wrong.
+        Step 9: Provide a detailed explanation of your reasoning process and final decision.
         
         Based on your verification, provide a JSON response with the following fields:
-        - "valid": (boolean) true if the provisional classification is supported by the context. False otherwise.
+        - "valid": (boolean) true if the provisional classification is supported by the context and appropriate for the query. False otherwise.
         - "final_classification_label": (string) The verified classification label. This should usually be the same as the provisional_label. If the provisional label is fundamentally unsupported, return the original provisional_label and mark as invalid.
         - "verification_explanation": (string) A detailed explanation of your reasoning process and why you accepted or rejected the classification. This should follow the ReAct pattern of step-by-step reasoning.
-        - "issue_note": (string, optional) If "valid" is false, provide a brief note on the primary issue (e.g., "Context does not support label.", "Label seems unrelated to context."). If "valid" is true, this can be omitted.
+        - "alternative_standards": (array) Include standards that were seriously considered during your reasoning process, especially those that could apply but weren't chosen due to lack of specific details. For each alternative standard, you MUST explain WHY it could be considered as an option - what specific aspects of the transaction or query align with this standard's characteristics. Focus on explaining the reasoning that made you consider this standard and what specific elements of the transaction would fit under this standard. Don't include standards that are clearly inappropriate, but do include close contenders.
+        - "issue_note": (string, optional) If "valid" is false, provide a brief note on the primary issue (e.g., "Context does not support label.", "Label seems unrelated to context.", "Classification doesn't match the query."). If "valid" is true, this can be omitted.
+        
+        The query to classify is: {{ query }}
         
         The provisional classification label is: {{ provisional_label_name }}
         
-        Retrieved Context:
-        ---
-        {% for text in retrieved_texts %}
-        {{ text }}
-        ---
+        {% if api_query %}
+        SEARCH QUERY USED: "{{ api_query }}"
+        {% endif %}
+        
+        RELEVANCE SCORE EXPLANATION: The relevance scores below indicate how closely each chunk of text matches the transaction details. Scores range from 0 to 1, where higher scores (closer to 1) indicate stronger relevance to the transaction. Give more weight to chunks with higher relevance scores when determining classification.
+        
+        Based on the RAG (BM25 + VECTOR STORE) retrieved sources (sorted by relevance):
+        {% for chunk in api_chunks|sort(attribute='score', reverse=true) %}
+        --- Source from {{ chunk.document_name }} (Relevance Score: {{ chunk.score|round(3) }}) ---
+        {{ chunk.chunk_text }}
         {% endfor %}
         
         Respond with ONLY the JSON object.
@@ -135,10 +147,29 @@ class VerifyNode:
                 "verification_explanation": "Verification could not be performed as no LLM was available."
             }
         
+        # Process api_retrieve data
+        api_chunks = []
+        api_query = ""
+        api_retrieve = state.get("api_retrieve_response", None)
+        if api_retrieve and isinstance(api_retrieve, dict):
+            # Extract the FAS chunks and query from the API retrieve response
+            api_chunks = api_retrieve.get("fas_chunks", [])
+            api_query = api_retrieve.get("query", "")
+            
+            # Sort chunks by relevance score (highest first)
+            if api_chunks:
+                api_chunks = sorted(api_chunks, key=lambda x: float(x.get("score", 0)), reverse=True)
+        
+        # If no API chunks are available, set empty list to ensure proper handling
+        if not api_chunks:
+            api_chunks = []
+        
         # Prepare variables for the template
         inputs = {
             "provisional_label_name": state.get("provisional_label_name", ""),
-            "retrieved_texts": state.get("retrieved_texts", []),  
+            "query": state.get("query", ""),
+            "api_chunks": api_chunks,
+            "api_query": api_query
         }
         
         # Create the chain
@@ -158,6 +189,56 @@ class VerifyNode:
 
             # Extract the explanation from the ReAct process
             verification_explanation = result.get("verification_explanation", "No detailed explanation provided.")
+            
+            # Extract any alternative standards identified
+            alternative_standards = result.get("alternative_standards", [])
+            if not isinstance(alternative_standards, list):
+                alternative_standards = []
+                
+            # Filter out alternatives that don't have proper explanations or are clearly not suitable
+            filtered_alternatives = []
+            for alt in alternative_standards:
+                if isinstance(alt, str):
+                    # Skip alternatives that are explicitly described as less likely/suitable
+                    if any(phrase in alt.lower() for phrase in [
+                        "less likely since", 
+                        "not suitable because",
+                        "clearly inappropriate",
+                        "definitely not applicable"
+                    ]):
+                        continue
+                    
+                    # Ensure the alternative has an explanation of why it could be considered
+                    if ("because" in alt.lower() or 
+                        "as it" in alt.lower() or 
+                        "due to" in alt.lower() or 
+                        "since" in alt.lower() or
+                        "elements of" in alt.lower() or
+                        "could apply" in alt.lower() or
+                        "might be" in alt.lower() or
+                        "reason" in alt.lower()):
+                        filtered_alternatives.append(alt)
+                    else:
+                        # If we have no explanation, add a generic one
+                        if len(alt) > 5:  # Basic check that this is actually a standard
+                            enhanced_alt = f"{alt} - Could be considered as the transaction has elements that might align with this standard's scope with additional details."
+                            filtered_alternatives.append(enhanced_alt)
+                else:
+                    filtered_alternatives.append(alt)
+            
+            # Replace the original list with the filtered one that excludes clearly unsuitable options
+            alternative_standards = filtered_alternatives
+            
+            # Only filter out all alternatives in extreme cases (extremely clear classification)
+            extreme_certainty = (
+                verification_explanation and 
+                ("absolutely certain" in verification_explanation.lower() or
+                "perfect match" in verification_explanation.lower() or
+                "no other standard could possibly apply" in verification_explanation.lower())
+            )
+            
+            if result["valid"] and extreme_certainty and alternative_standards:
+                alternative_standards = []
 
             issues_for_downstream = []
             llm_issue_note = result.get("issue_note")
@@ -170,12 +251,13 @@ class VerifyNode:
                     "Verification LLM reported 'valid: false' but 'issue_note' was missing or empty."
                 )
             
-            # Return a structure including the verification explanation
+            # Return a structure including the verification explanation and alternative standards
             return {
                 "valid": result["valid"],
                 "final_classification_label": result["final_classification_label"],
                 "issues": issues_for_downstream,
-                "verification_explanation": verification_explanation
+                "verification_explanation": verification_explanation,
+                "alternative_standards": alternative_standards
             }
 
         except Exception as e:
@@ -207,6 +289,7 @@ class VerifyNode:
                 new_state["probs_vector"] = {} # Or some default if appropriate
             return new_state
         
+    
         provisional_label_name = new_state.get("provisional_label_name", "")
         # print(f"VerifyNode: Provisional Label for verification: {provisional_label_name}")
 
@@ -217,6 +300,9 @@ class VerifyNode:
         
         # Add the detailed verification explanation to the state
         new_state["verification_explanation"] = verification_result.get("verification_explanation", "")
+        
+        # Add alternative standards information to the state
+        new_state["alternative_standards"] = verification_result.get("alternative_standards", [])
         
         provisional_rationale = new_state.get("provisional_rationale", "")
         
@@ -233,8 +319,13 @@ class VerifyNode:
                 
             print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
         
-        # For debugging - show the verification explanation
+        # For debugging - show the verification explanation and alternative standards
         print(f"VerifyNode: Verification explanation: {new_state.get('verification_explanation', '')[:100]}...")
+        
+        # Display alternative standards if any were found
+        alternative_standards = new_state.get('alternative_standards', [])
+        if alternative_standards:
+            print(f"VerifyNode: Alternative standards: {alternative_standards}")
 
         # Ensure probs_vector is preserved or initialized
         if "probs_vector" not in new_state:

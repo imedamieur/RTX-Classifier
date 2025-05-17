@@ -36,6 +36,7 @@ class ComposeNode:
         error_msg_to_propagate = new_state.get('error_message')
         rationale = new_state.get("final_rationale", None)
         label = new_state.get("final_classification_label", None)
+        alternative_standards = new_state.get("alternative_standards", None)
 
 
 
@@ -52,6 +53,7 @@ class ComposeNode:
             "valid": is_valid,
             "rationale": rationale,
             "label": label,	
+            "alternative_standards": alternative_standards
         }
 
         if not is_valid:
@@ -76,12 +78,13 @@ class ComposeNode:
         new_state["valid"] = final_output["valid"]
         new_state["final_classification_label"] = final_output["label"]
         new_state["final_rationale"] = final_output["rationale"]
+        new_state["alternative_standards"] = final_output["alternative_standards"]
         # If there is an error message in the final output, propagate it to the new state
         if "error_message" in final_output:
             new_state["error_message"] = final_output["error_message"]
         else:
             new_state.pop("error_message", None)
 
-        
+        print(f"DBUG: cOMPOSENODE: ALTERNATIVE STANDARDS: {new_state.get('alternative_standards')}")
             
         return new_state

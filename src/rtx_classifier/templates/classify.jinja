@@ -27,23 +27,37 @@ The transaction should be classified according to one of these AAOIFI standards:
 - FAS 28: Murabaha and Other Deferred Payment Sales
 - FAS 32: Ijara and Ijara Muntahia Bittamleek
 
-Based on the retrieved sources:
-{% for text in retrieved_texts %}
---- Source {{loop.index}} ---
-{{ text }}
+{% if excluded_standards is defined and excluded_standards %}
+IMPORTANT: The following standards are to be EXCLUDED. Their corresponding confidence scores (logits) in the output MUST be extremely low (near zero):
+{% for standard in excluded_standards %}
+- {{ standard }} (This refers to {{ STANDARD_FULL_NAMES.get(standard, 'Unknown Standard') }})
+{% endfor %}
+Remember, the logits array corresponds to [FAS4, FAS7, FAS10, FAS28, FAS32].
+{% endif %}
+
+{% if api_query %}
+SEARCH QUERY USED: "{{ api_query }}"
+{% endif %}
+
+RELEVANCE SCORE EXPLANATION: The relevance scores below indicate how closely each chunk of text matches the transaction details. Scores range from 0 to 1, where higher scores (closer to 1) indicate stronger relevance to the transaction. Give more weight to chunks with higher relevance scores when determining classification.
+
+Based on the RAG (BM25 + VECTOR STORE) retrieved sources (sorted by relevance):
+{% for chunk in api_chunks|sort(attribute='score', reverse=true) %}
+--- Source from {{ chunk.document_name }} (Relevance Score: {{ chunk.score|round(3) }}) ---
+{{ chunk.chunk_text }}
 {% endfor %}
 
 Think through this step by step:
 1. Identify the accounts involved and their nature
 2. Determine the transaction type based on account names and flow
 3. Match the transaction characteristics to AAOIFI standards
-4. Consider any specific requirements in the applicable standard
-5. Cite specific paragraphs from the standards (e.g., "According to FAS 28, paragraph 3.1...")
+4. Prioritize evidence from chunks with higher relevance scores (>0.7 is highly relevant)
+5. If multiple standards could apply, use the highest relevance score chunks to make your final decision
 
 Finally, provide your classification and reasoning in this JSON format:
 {
   "logits": [float, float, float, float, float],  // Confidence scores for each standard in order: FAS4, FAS7, FAS10, FAS28, FAS32
-  "rationale": "Your detailed reasoning for the classification, including citations to relevant paragraphs"
+  "rationale": "Your detailed reasoning for the classification. This reasoning MUST clearly state the determined AAOIFI standard."
 }
 
 Your logits should sum to 1.0 representing a probability distribution.

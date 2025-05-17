@@ -7,6 +7,8 @@ from typing import Dict, List, Any, Optional
 import os
 from dataclasses import dataclass
 import dotenv
+import json
+import requests
 
 # Load environment variables
 dotenv.load_dotenv()
@@ -242,6 +244,43 @@ class RetrieveNode:
             
         return documents
     
+    def _api_retrieve(self, query_text: str, k_chunks: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve documents using an external API.
+        
+        Args:
+            query_text: The query text
+            
+        Returns:
+            List of retrieved documents
+        """
+        # TODO: Replace with the actual API endpoint URL
+        # url = "YOUR_ACTUAL_API_ENDPOINT_HERE" 
+        # Using placeholder for now as in the original example
+        url = "http://192.168.72.170:8000/retrieve-fas-chunks" 
+
+        payload = {
+            "query": query_text,
+            "top_k_fas_chunks": k_chunks
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()  # Raise an exception for HTTP errors (4xx or 5xx)
+        
+        # Assuming the API returns JSON
+        response_data = response.json()
+        
+        
+        return response_data
+      
+      
+        
+    
     def _apply_reranking(self, query_text: str, documents: List[RetrievedDocument]) -> List[RetrievedDocument]:
         """
         Apply Cohere's reranking to improve document relevance.
@@ -350,6 +389,11 @@ class RetrieveNode:
 
             # Format the query
             query = self._format_entries_for_search(new_state)
+            retreive_k_chunks = self.top_k
+
+            response = self._api_retrieve(query, retreive_k_chunks)
+            new_state["api_retrieve_response"] = response  # Pass API response to next node
+
             
             # Query the vector store
             documents = self._query_vectorstore(query)
@@ -357,12 +401,7 @@ class RetrieveNode:
             reranking_status = "with reranking" if self.use_reranker else "without reranking"
             print(f"Retrieved documents ({reranking_status}): {len(documents)} results")
             
-            # Add debug information about top results
-            if documents:
-                print(f"Top result: {documents[0].standard} ¶{documents[0].paragraph} (score: {documents[0].score:.4f})")
-                if len(documents) > 1:
-                    print(f"Second result: {documents[1].standard} ¶{documents[1].paragraph} (score: {documents[1].score:.4f})")
-            
+
             # Extract texts and add to state
             new_state["retrieved_texts"] = [doc.text for doc in documents]
             
@@ -373,6 +412,7 @@ class RetrieveNode:
             
             # Store scores for evaluation/debugging
             new_state["retrieval_scores"] = [doc.score for doc in documents]
+            new_state["query"] = query
             
             # If documents list is empty, retrieved_texts and sources will correctly be empty.
             # This is a valid outcome (no results found) and not an error in itself.

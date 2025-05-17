@@ -1,0 +1,3010 @@
+Here is a coding project I am working on.
+It starts with the full structure of the project, then you will have each file title and file content.
+
+Respond with 'OK' and for now, just understand the project completely.
+I will ask for help in the next prompt so you can assist me with this project.
+
+
+
+--- PROJECT STRUCTURE ---
+
+
+{
+    "./src/rtx_classifier/": {
+        "app.py": {},
+        "pipeline.py": {},
+        "run.py": {},
+        "vectorstore.py": {},
+        "__init__.py": {},
+        "nodes/": {
+            "calibrate.py": {},
+            "classify.py": {},
+            "compose.py": {},
+            "preprocess.py": {},
+            "rationale.py": {},
+            "retrieve.py": {},
+            "verify.py": {},
+            "voting.py": {},
+            "__init__.py": {}
+        },
+        "__pycache__/": {},
+        "templates/": {
+            "classify.jinja": {}
+        }
+    }
+}
+
+
+--- FILE : app.py ---
+
+
+import streamlit as st
+import json
+from rtx_classifier.pipeline import run_classifier
+from rtx_classifier.run import load_dotenv
+from rtx_classifier.nodes.classify import LABELS, STANDARD_FULL_NAMES
+
+# Load environment variables
+load_dotenv()
+
+st.title("RTX Classifier")
+
+# --- Input Method Selection ---
+input_method = st.radio(
+    "Choose input method:",
+    ('Form', 'Upload JSON'),
+    key='input_method_selector',
+    horizontal=True
+)
+
+# Initialize session state for entries if it doesn't exist (for Form method)
+if 'entries' not in st.session_state:
+    st.session_state.entries = []
+
+# To store data if JSON is uploaded
+json_data_from_file = None
+# To store the uploaded file reference itself to check if a new file was uploaded
+if 'uploaded_file_ref' not in st.session_state:
+    st.session_state.uploaded_file_ref = None
+
+
+# --- Define entry manipulation functions (used by Form input) ---
+def add_entry():
+    st.session_state.entries.append({"account": "", "debit": 0.0, "credit": 0.0})
+
+def remove_entry(index):
+    st.session_state.entries.pop(index)
+
+
+# --- Conditional UI for Form or JSON Upload ---
+if input_method == 'Form':
+    st.header("Enter Transaction Details (Form)")
+    context_input = st.text_area("Context", height=100, help="Provide the contextual information for the transaction.", key="form_context")
+    adjustments_input = st.text_area("Adjustments", height=100, help="Detail any adjustments made or required.", key="form_adjustments")
+    accounting_treatment_input = st.text_area("Accounting Treatment", height=100, help="Describe the proposed or actual accounting treatment.", key="form_accounting_treatment")
+
+    st.subheader("Journal Entries")
+    for i, entry in enumerate(st.session_state.entries):
+        cols = st.columns([3, 2, 2, 1])
+        # Ensure keys are unique for each part of the entry
+        entry["account"] = cols[0].text_input(f"Account##form_account_{i}", value=entry.get("account", ""), key=f"form_account_{i}", label_visibility="collapsed", placeholder="Account Name")
+        entry["debit"] = cols[1].number_input(f"Debit##form_debit_{i}", value=entry.get("debit", 0.0), key=f"form_debit_{i}", format="%.2f", label_visibility="collapsed", help="Debit Amount")
+        entry["credit"] = cols[2].number_input(f"Credit##form_credit_{i}", value=entry.get("credit", 0.0), key=f"form_credit_{i}", format="%.2f", label_visibility="collapsed", help="Credit Amount")
+        cols[3].button("üóëÔ∏è", key=f"form_remove_{i}", on_click=remove_entry, args=(i,), help="Remove this entry")
+
+    if st.button("Add Entry", on_click=add_entry, key="form_add_entry"):
+        pass # on_click handles the logic
+
+elif input_method == 'Upload JSON':
+    st.header("Upload Transaction JSON")
+    uploaded_file = st.file_uploader("Upload a JSON file with transaction data", type="json", key="json_uploader")
+
+    if uploaded_file is not None:
+        # Check if this is a new file upload or the same one from a previous run
+        if st.session_state.uploaded_file_ref != uploaded_file:
+            st.session_state.uploaded_file_ref = uploaded_file # Store new file reference
+            try:
+                # Make sure to reset the file pointer before reading
+                uploaded_file.seek(0)
+                json_data_from_file = json.load(uploaded_file)
+                st.session_state.json_data_from_file_cache = json_data_from_file # Cache it
+                st.subheader("Uploaded JSON Data:")
+                st.json(json_data_from_file)
+            except json.JSONDecodeError:
+                st.error("Invalid JSON file. Please upload a valid JSON file.")
+                st.session_state.json_data_from_file_cache = None # Clear cache on error
+            except Exception as e:
+                st.error(f"An error occurred while processing the file: {e}")
+                st.session_state.json_data_from_file_cache = None # Clear cache on error
+        elif 'json_data_from_file_cache' in st.session_state and st.session_state.json_data_from_file_cache is not None:
+            # If the file is the same, use the cached data
+            json_data_from_file = st.session_state.json_data_from_file_cache
+            st.subheader("Uploaded JSON Data (cached):") # Indicate it's cached
+            st.json(json_data_from_file)
+    else:
+        st.session_state.uploaded_file_ref = None # Clear file reference if no file
+        st.session_state.json_data_from_file_cache = None # Clear cache if no file
+
+
+# --- "Run Classifier" Button Logic ---
+if st.button("Run Classifier", key="run_classifier_button"):
+    json_data_to_process = None
+    valid_input = False
+
+    if input_method == 'Form':
+        # Retrieve current values from form inputs
+        current_context = st.session_state.get("form_context", "")
+        current_adjustments = st.session_state.get("form_adjustments", "")
+        current_accounting_treatment = st.session_state.get("form_accounting_treatment", "")
+
+        if not current_context or not current_adjustments or not current_accounting_treatment:
+            st.warning("Please fill in Context, Adjustments, and Accounting Treatment fields for the form.")
+        elif not st.session_state.entries:
+            st.warning("Please add at least one journal entry for the form.")
+        else:
+            all_entries_filled = True
+            for entry in st.session_state.entries:
+                if not entry["account"] or (entry["debit"] == 0.0 and entry["credit"] == 0.0):
+                    all_entries_filled = False
+                    break
+            if not all_entries_filled:
+                st.warning("Please ensure all parts of each journal entry (Account, and at least one of Debit/Credit) are filled for the form.")
+            else:
+                json_data_to_process = {
+                    "context": current_context,
+                    "adjustments": current_adjustments,
+                    "accounting_treatment": current_accounting_treatment,
+                    "entries": st.session_state.entries
+                }
+                st.subheader("Input Data (from form):")
+                st.json(json_data_to_process)
+                valid_input = True
+
+    elif input_method == 'Upload JSON':
+        # Use the potentially cached data from session state
+        json_data_from_file_to_use = st.session_state.get('json_data_from_file_cache')
+
+        if st.session_state.get('uploaded_file_ref') is None: # Check if a file was ever uploaded
+            st.warning("Please upload a JSON file.")
+        elif json_data_from_file_to_use is None:
+            st.error("There was an issue with the uploaded JSON file (it might be invalid or empty). Please check and re-upload if necessary.")
+        else:
+            if not isinstance(json_data_from_file_to_use, dict):
+                st.error("The uploaded JSON content must be a valid JSON object (dictionary).")
+            else:
+                # Add more specific validation for uploaded JSON structure if needed here
+                # For example, check for "context", "entries" keys
+                required_keys = ["context", "adjustments", "accounting_treatment", "entries"]
+                if not all(key in json_data_from_file_to_use for key in required_keys):
+                    st.warning(f"Uploaded JSON is missing one or more required keys: {', '.join(required_keys)}. Proceeding, but classifier might not work as expected.")
+                    # You could choose to set valid_input = False here if keys are strictly mandatory
+                json_data_to_process = json_data_from_file_to_use
+                # Data already displayed when uploaded and cached
+                valid_input = True
+
+    if valid_input and json_data_to_process is not None:
+        # st.subheader("Classification Result:") # Commented out
+        with st.spinner("Running classifier..."):
+            try:
+                result = run_classifier(json_data_to_process, model_provider=st.session_state.model_provider, model_name=st.session_state.model_name)
+                  # if "rationale" in result: # Commented out
+                #     st.write("**Rationale:**")
+                #     st.write(result["rationale"])                # if "sources" in result and result["sources"]: # Commented out
+                #     st.write("**Relevant FAS Documents:**")
+                #     for source in result["sources"]:
+                #         st.markdown(f"- {source}") 
+                # else:
+                #     st.write("No specific FAS documents identified.")
+                
+                if "label" in result and result["label"]:
+                    label_code = result["label"]
+                    full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
+                    st.subheader(f"Classification: {full_name} ({label_code})")
+                
+                if "rationale" in result and result["rationale"]:
+                    st.subheader("Rationale:")
+                    st.write(result["rationale"])
+
+                if "alternative_standards" in result and result["alternative_standards"]:
+                    st.subheader("Alternative Standards:")
+                    for alt_standard in result["alternative_standards"]:
+                        st.markdown(f"- {alt_standard}")
+                
+                if "prob_vector" in result and result["prob_vector"]:
+                    # st.write("**Probability Vector:**") # Commented out
+                    if isinstance(result["prob_vector"], list) and len(result["prob_vector"]) == len(LABELS):
+                        for i, label_code in enumerate(LABELS):
+                            full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
+                            probability = result["prob_vector"][i]
+                            st.markdown(f"- **{full_name} ({label_code})**: {probability:.4f}")
+                    else:
+                        # st.write("Probability vector format is unexpected or does not match known labels. Displaying raw vector:") # Commented out
+                        st.json(result["prob_vector"])
+                # else: # Commented out
+                    # st.write("No probability vector provided in the result.")
+                
+                # Optionally display full result for debugging
+                # st.write("**Full Result (for debugging):**")
+                # st.json(result)
+
+            except Exception as e:
+                st.error(f"Error running classifier: {e}")
+                st.exception(e) # Provides more detailed traceback for debugging
+    elif st.session_state.get('run_classifier_button'): # If button was pressed but input wasn't valid
+        # Specific warnings should have already been displayed.
+        # You could add a generic one here if needed, but it might be redundant.
+        # st.error("Input is not valid. Please check the warnings above.")
+        pass
+
+# --- Sidebar Configuration ---
+st.sidebar.header("Configuration")
+st.sidebar.selectbox("Model Provider", ["openai", "google"], index=0, key="model_provider")
+st.sidebar.text_input("Model Name (optional)", "", key="model_name", help="Default will be used if empty (e.g., gpt-4o or gemini-1.5-pro-latest)")
+
+st.sidebar.markdown("---")
+st.sidebar.info(
+    "This app uses the RTX Classifier to classify accounting transactions "
+    "based on AAOIFI standards."
+)
+
+if __name__ == "__main__":
+    # Streamlit runs the script from top to bottom on every interaction.
+    # The run_classifier function picks up model_provider and model_name
+    # from st.session_state, which are set by the sidebar widgets.
+    pass
+
+
+
+--- FILE : pipeline.py ---
+
+
+"""
+LangGraph pipeline for the Reverse-Transaction Classifier.
+"""
+from dataclasses import dataclass, field, asdict
+from typing import Dict, List, Any, Optional, Tuple, Union, Iterator
+import os
+import dotenv
+
+# Load environment variables
+dotenv.load_dotenv()
+
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
+from langgraph.graph import StateGraph, END
+import numpy as np
+
+from rtx_classifier.nodes.preprocess import PreprocessNode
+from rtx_classifier.nodes.retrieve import RetrieveNode
+from rtx_classifier.nodes.classify import ClassifyFanOutNode
+from rtx_classifier.nodes.voting import MajorityVoteNode
+from rtx_classifier.nodes.calibrate import CalibrateNode
+from rtx_classifier.nodes.verify import VerifyNode
+from rtx_classifier.nodes.compose import ComposeNode
+
+# Get configuration from environment variables
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
+DEFAULT_MODEL_PROVIDER = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
+FALLBACK_TEMPERATURE = float(os.getenv("FALLBACK_TEMPERATURE", "0.3"))
+CALIBRATION_TEMP = float(os.getenv("CALIBRATION_TEMP", "0.7"))
+TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "10"))
+
+
+@dataclass
+class ClassifierState:
+    """State for the Reverse-Transaction Classifier pipeline."""
+    # Input data
+    entries: List[Dict[str, Any]]
+    context: Optional[str] = None
+    adjustments: Optional[str] = None
+    accounting_treatment: Optional[str] = None
+    
+    # Processing state
+    valid: bool = False
+    error_message: Optional[str] = None
+    retrieved_texts: List[str] = field(default_factory=list)
+    logits: List[List[float]] = field(default_factory=list) # From ClassifyFanOutNode
+    rationales: List[str] = field(default_factory=list) # From ClassifyFanOutNode
+    avg_logits: List[float] = field(default_factory=list) # From MajorityVoteNode
+    provisional_label: Optional[int] = None # Retained as it might be used by calibration/voting before verification
+    provisional_rationale: Optional[str] = None
+    provisional_label_name: Optional[str] = None # Added for clarity
+    final_classification_label: Optional[str] = None # Added by VerifyNode
+    retry_count: int = 0
+    verification_explanation : Optional[str] = None # Added by VerifyNode
+    final_rationale: Optional[str] = None # Added by VerifyNode
+    alternative_standards: List[str] = field(default_factory=list) # Added by VerifyNode
+    api_retrieve_response: Optional[dict] = None  # Added to pass API response from retrieve node
+    
+    # Final output focus
+    prob_vector: List[float] = field(default_factory=list)
+    
+    # Removed fields:
+    # sources: List[str] = field(default_factory=list)
+    # correction_notes: Optional[str] = None
+    # provisional_explanation: Optional[str] = None (was never formally here, but as a note)
+    # final_explanation: Optional[str] = None (was never formally here, but as a note)
+    
+    # Make the dataclass fully compatible with newer LangGraph versions
+    def __iter__(self) -> Iterator[Tuple[str, Any]]:
+        """Make the state iterable for compatibility with LangGraph."""
+        return iter(asdict(self).items())
+    
+    def __getitem__(self, key):
+        """Implement __getitem__ for dict-like access."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key)
+    
+    def get(self, key, default=None):
+        """Implement get method for dict-like access."""
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            return default
+        
+    def keys(self):
+        """Implement keys method for dict-like access."""
+        return asdict(self).keys()
+        
+    def items(self):
+        """Implement items method for dict-like access."""
+        return asdict(self).items()
+        
+    def __setitem__(self, key, value):
+        """Implement __setitem__ for dict-like update access."""
+        setattr(self, key, value)
+        
+    def values(self):
+        """Implement values method for dict-like access."""
+        return asdict(self).values()
+        
+    def update(self, other=None, **kwargs):
+        """Implement update method for compatibility with graph transitions."""
+        if other is not None:
+            for key, value in other.items() if hasattr(other, 'items') else other:
+                setattr(self, key, value)
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        return self
+        
+    def copy(self):
+        """Implement copy method for graph transitions."""
+        return self.__class__(**asdict(self))
+
+
+def get_llm(
+    model_provider: str = None,
+    model_name: str = None,
+    openai_api_key: Optional[str] = None,
+    google_api_key: Optional[str] = None,
+    temperature: float = None,
+) -> BaseChatModel:
+    """
+    Create and return an LLM instance based on the provider and model name.
+    
+    Args:
+        model_provider: Provider of the model ('openai' or 'google')
+        model_name: Name of the model to use
+        openai_api_key: OpenAI API key
+        google_api_key: Google API key
+        temperature: Temperature parameter for the model
+        
+    Returns:
+        A chat model instance that can be used with LangChain
+    """
+    # Use defaults if not provided
+    model_provider = model_provider or DEFAULT_MODEL_PROVIDER
+    model_name = model_name or DEFAULT_MODEL
+    temperature = temperature if temperature is not None else DEFAULT_TEMPERATURE
+    
+    if model_provider.lower() == "openai":
+        # Handle OpenAI models
+        if not openai_api_key:
+            openai_api_key = os.environ.get("OPENAI_API_KEY")
+            if not openai_api_key:
+                raise ValueError("OpenAI API key is required for OpenAI models")
+        
+        print(f"Using OpenAI model: {model_name}")
+        return ChatOpenAI(
+            api_key=openai_api_key,
+            model_name=model_name,
+            temperature=temperature,
+        )
+    
+    elif model_provider.lower() == "google":
+        # Handle Google Gemini models
+        if not google_api_key:
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            if not google_api_key:
+                raise ValueError("Google API key is required for Gemini models")
+        
+        # Use gemini-2.0-flash as requested by the user for Google provider
+        effective_model_name = "gemini-2.0-flash"
+        print(f"Using Google model: {effective_model_name} (overrides provided model_name if any for Google provider)")
+        
+        return ChatGoogleGenerativeAI(
+            google_api_key=google_api_key,
+            model=effective_model_name,
+            temperature=0.4,
+        )
+    
+    else:
+        raise ValueError(f"Unsupported model provider: {model_provider}")
+
+
+def build_classifier_graph(
+    model_provider: str = None,
+    model_name: str = None,
+    openai_api_key: Optional[str] = None,
+    google_api_key: Optional[str] = None,
+    temperature: float = None,
+    fallback_temperature: float = None,
+    calibration_temp: float = None,
+) -> StateGraph:
+    """
+    Build the RTX Classifier LangGraph pipeline.
+    
+    Args:
+        model_provider: Provider of the model ('openai' or 'google')
+        model_name: Name of the model to use for classification
+        openai_api_key: OpenAI API key
+        google_api_key: Google API key
+        temperature: Primary temperature for classification
+        fallback_temperature: Temperature for retry attempts
+        calibration_temp: Temperature scaling factor for calibration
+        
+    Returns:
+        A LangGraph StateGraph for the RTX Classifier
+    """
+    # Use environment variables if not provided
+    model_provider = model_provider or DEFAULT_MODEL_PROVIDER
+    
+    if fallback_temperature is None:
+        fallback_temperature = FALLBACK_TEMPERATURE
+        
+    if calibration_temp is None:
+        calibration_temp = CALIBRATION_TEMP
+    
+    # Initialize LLM
+    llm = get_llm(
+        model_provider=model_provider,
+        model_name=model_name,
+        openai_api_key=openai_api_key,
+        google_api_key=google_api_key,
+        temperature= temperature,
+    )
+    
+    # Initialize nodes
+    preprocess_node = PreprocessNode()
+    retrieve_node = RetrieveNode(
+        top_k=TOP_K_RETRIEVAL,
+        persist_directory=True,  # Use environment variable for persistence directory
+    )
+    classify_node = ClassifyFanOutNode(
+        llm=llm,
+        num_parallel=3,
+    )
+    majority_vote_node = MajorityVoteNode()
+    calibrate_node = CalibrateNode(temperature=calibration_temp)
+    verify_node = VerifyNode(llm=llm)
+    compose_node = ComposeNode()
+    
+    # Build the graph
+    workflow = StateGraph(ClassifierState)
+    
+    # Add nodes
+    workflow.add_node("preprocess", preprocess_node)
+    workflow.add_node("retrieve", retrieve_node)
+    workflow.add_node("classify", classify_node)
+    workflow.add_node("majority_vote", majority_vote_node)
+    workflow.add_node("calibrate", calibrate_node)
+    workflow.add_node("verify", verify_node)
+    workflow.add_node("compose", compose_node)
+    
+    # Define edges
+    workflow.add_edge("preprocess", "retrieve")
+    workflow.add_edge("retrieve", "classify")
+    workflow.add_edge("classify", "majority_vote")
+    workflow.add_edge("majority_vote", "calibrate")
+    workflow.add_edge("calibrate", "verify")
+    
+    # Define conditional edges for verification results
+    workflow.add_conditional_edges(
+        "verify",
+        lambda state: {
+            # Route based on verification status and retry count
+            # If already retried too many times, force completion to avoid infinite loops
+            "compose": state["retry_count"] >= 3 or state["valid"],
+            "classify": state["retry_count"] < 3 and not state["valid"]
+        }
+    )
+    
+    workflow.add_edge("compose", END)
+    
+    # Set entry point
+    workflow.set_entry_point("preprocess")
+    
+    return workflow
+
+
+def run_classifier(
+    json_data: Dict[str, Any],
+    model_provider: str = None,
+    model_name: str = None,
+    openai_api_key: Optional[str] = None,
+    google_api_key: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run the RTX Classifier on the input JSON data.
+    
+    Args:
+        json_data: Input JSON with entries and optional context fields
+        model_provider: Provider of the model ('openai' or 'google')
+        model_name: Name of the model to use
+        openai_api_key: OpenAI API key
+        google_api_key: Google API key
+        
+    Returns:
+        Classification results with probabilities, rationale, and sources
+    """
+    # Load environment variables if not already loaded
+    dotenv.load_dotenv()
+    
+    # Build the graph without using with_config
+    graph = build_classifier_graph(
+        model_provider=model_provider,
+        model_name=model_name,
+        openai_api_key=openai_api_key,
+        google_api_key=google_api_key,
+    )
+    
+    # Initialize state with ClassifierState object
+    initial_state = ClassifierState(
+        entries=json_data.get("entries", []),
+        context=json_data.get("context"),
+        adjustments=json_data.get("adjustments"),
+        accounting_treatment=json_data.get("accounting_treatment"),
+        valid=True,  # Start with valid=True
+    )
+    
+    print(f"Starting classification with model provider: {model_provider or DEFAULT_MODEL_PROVIDER}")
+    
+    # Run the graph using invoke (preferred method for current LangGraph versions)
+    try:
+        # Use invoke method for current LangGraph versions
+        result = graph.invoke(initial_state)
+        print("Successfully executed graph with .invoke()")
+    except AttributeError:
+        # Fallback for very old versions that might use run
+        try:
+            print("Trying .run() method...")
+            result = graph.run(initial_state)
+            print("Successfully executed graph with .run()")
+        except Exception as e2:
+            print(f"Error running graph with .run(): {str(e2)}")
+            try:
+                # Try using the compiled graph approach
+                print("Trying compiled graph approach...")
+                compiled_graph = graph.compile()
+                result = compiled_graph.invoke(initial_state)
+                print("Successfully executed compiled graph")
+            except Exception as e3:
+                print(f"All execution attempts failed. Last error: {str(e3)}")
+                return {
+                    "prob_vector": [],
+                    "explanation": f"Error executing graph: {str(e3)}",
+                    "sources": []
+                }
+    except Exception as e:
+        print(f"Error running graph with .invoke(): {str(e)}")
+        try:
+            # Try using the compiled graph approach
+            print("Trying compiled graph approach...")
+            compiled_graph = graph.compile()
+            result = compiled_graph.invoke(initial_state)
+            print("Successfully executed compiled graph")
+        except Exception as e3:
+            print(f"All execution attempts failed. Last error: {str(e3)}")
+            return {
+                "prob_vector": [],
+                "explanation": f"Error executing graph: {str(e3)}",
+                "sources": []
+            }
+    
+    # Convert ClassifierState to dict if needed
+    if not isinstance(result, dict):
+        try:
+            result = asdict(result)
+        except Exception as e:
+            print(f"Error converting result to dict: {str(e)}")
+            # If conversion fails, create a minimal valid result
+            return {
+                "prob_vector": [],
+                "explanation": f"Error processing result: {str(e)}",
+                "sources": []
+            }
+    
+    # Debug the final result
+    # print(f"Final result keys: {list(result.keys())}")
+    # print(f"Final result valid: {result.get('valid', False)}")
+    
+    # Prepare the final output based on the simplified requirements
+    output_prob_vector = result.get("prob_vector", [])
+    output_valid = result.get("valid", False)
+    output_error_message = result.get("error_message")
+    rationale = result.get("final_rationale", None)
+    label = result.get("final_classification_label", None)
+    alternative_standards = result.get("alternative_standards", None)
+
+    if not isinstance(output_prob_vector, list) or len(output_prob_vector) != 5:
+        output_prob_vector = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
+        output_valid = False
+        if not output_error_message:
+            output_error_message = "Output probability vector malformed or missing."
+
+    final_output = {
+        "prob_vector": output_prob_vector,
+        "label": label,
+        "valid": output_valid,
+        "rationale": rationale,
+        "alternative_standards": alternative_standards,
+        "error_message": None,  # Initialize to None, will be set if invalid
+    }
+    if not output_valid:
+        final_output["error_message"] = output_error_message or "Classification failed for an unspecified reason."
+    
+    return final_output
+
+
+import logging
+
+# Initialize logger
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+def execute(self, entries, **kwargs):
+    """Execute the classifier pipeline on a list of entries."""
+    logger.info(f"Executing classifier pipeline on {len(entries)} entries")
+    
+    # Initialize state
+    state = ClassifierState(entries=entries, **kwargs)
+    
+    # Try multiple execution methods for robustness
+    result = None
+    methods_tried = []
+    
+    # Method 1: Try invoking the graph directly with state
+    try:
+        methods_tried.append("invoke")
+        logger.debug("Attempting to execute graph with invoke() method")
+        result = self.graph.invoke(state)
+        logger.info("Graph executed successfully with invoke()")
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to execute graph with invoke(): {str(e)}")
+    
+    # Method 2: Try running the graph with state as dict
+    try:
+        methods_tried.append("run")
+        logger.debug("Attempting to execute graph with run() method")
+        result = self.graph.run(asdict(state))
+        logger.info("Graph executed successfully with run()")
+        return ClassifierState(**result) if isinstance(result, dict) else result
+    except Exception as e:
+        logger.warning(f"Failed to execute graph with run(): {str(e)}")
+    
+    # Method 3: Try compiled version of the graph
+    try:
+        methods_tried.append("compiled_graph")
+        logger.debug("Attempting to execute graph with compiled graph")
+        app = self.graph.compile()
+        result = app.invoke(state)
+        logger.info("Graph executed successfully with compiled graph")
+        return result
+    except Exception as e:
+        logger.warning(f"Failed to execute graph with compiled graph: {str(e)}")
+    
+    # Method 4: Try with direct node execution as fallback
+    try:
+        methods_tried.append("manual_execution")
+        logger.debug("Attempting manual execution of graph nodes")
+        
+        # Process the entries manually through each node
+        state = self.node_preprocess(state)
+        state = self.node_retrieve(state)
+        state = self.node_classify(state)
+        state = self.node_calibrate(state)
+        state = self.node_verify(state)
+        state = self.node_voting(state)
+        state = self.node_compose(state)
+        
+        logger.info("Graph executed successfully with manual node execution")
+        return state
+    except Exception as e:
+        logger.warning(f"Failed to execute graph with manual execution: {str(e)}")
+    
+    # If all methods failed, raise an error
+    error_msg = f"Failed to execute graph with methods: {', '.join(methods_tried)}"
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
+
+
+--- FILE : run.py ---
+
+
+"""
+CLI entry point for the RTX Classifier.
+"""
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Dict, Any, Optional
+import dotenv
+
+from rtx_classifier.pipeline import run_classifier
+
+
+def load_dotenv():
+    """Load environment variables from .env file."""
+    # Look for .env file in the project root (2 directories up from this file)
+    dotenv_path = Path(__file__).parent.parent.parent / ".env"
+    if dotenv_path.exists():
+        dotenv.load_dotenv(dotenv_path)
+        return True
+    return False
+
+
+def load_json_input(file_path: str) -> Dict[str, Any]:
+    """
+    Load the input JSON from the provided file path.
+    
+    Args:
+        file_path: Path to the JSON file
+        
+    Returns:
+        JSON payload as a dictionary
+    """
+    try:
+        with open(file_path, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Error: File not found - {file_path}")
+        sys.exit(1)
+    except json.JSONDecodeError:
+        print(f"Error: Invalid JSON in file - {file_path}")
+        sys.exit(1)
+
+
+def main():
+    # Load environment variables
+    env_loaded = load_dotenv()
+    if not env_loaded:
+        print("Warning: .env file not found. Using default values or expecting command-line parameters.")
+    
+    # Get default model info from environment variables
+    default_model = os.getenv("DEFAULT_MODEL", "gpt-4o")
+    default_provider = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="Reverse-Transaction Classifier for AAOIFI Standards"
+    )
+    parser.add_argument(
+        "input_file",
+        help="Path to the input JSON file containing the transaction entries"
+    )
+    parser.add_argument(
+        "--output", "-o",
+        help="Path to write the output JSON (defaults to stdout)"
+    )
+    parser.add_argument(
+        "--provider", "-p",
+        choices=["openai", "google"],
+        default=default_provider,
+        help=f"Model provider to use (default: {default_provider})"
+    )
+    parser.add_argument(
+        "--model", "-m",
+        default=default_model,
+        help=f"Model name to use for classification (default: {default_model})"
+    )
+    parser.add_argument(
+        "--openai-key", "-ok",
+        help="OpenAI API key (defaults to OPENAI_API_KEY environment variable)"
+    )
+    parser.add_argument(
+        "--google-key", "-gk",
+        help="Google API key (defaults to GOOGLE_API_KEY environment variable)"
+    )
+    parser.add_argument(
+        "--gemini",
+        action="store_true",
+        help="Shortcut to use the gemini-2.5-pro-preview-05-06 model"
+    )
+    
+    args = parser.parse_args()
+    
+    # Handle the gemini shortcut flag
+    if args.gemini:
+        args.provider = "google"
+        args.model = "gemini-2.5-pro-preview-05-06"
+    
+    # Load input JSON
+    json_data = load_json_input(args.input_file)
+    
+    # Set up API keys based on the provider
+    openai_api_key = None
+    google_api_key = None
+    
+    if args.provider.lower() == "openai":
+        openai_api_key = args.openai_key or os.environ.get("OPENAI_API_KEY")
+        if not openai_api_key:
+            print("Error: OpenAI API key not provided and OPENAI_API_KEY environment variable not set")
+            sys.exit(1)
+    elif args.provider.lower() == "google":
+        google_api_key = args.google_key or os.environ.get("GOOGLE_API_KEY")
+        if not google_api_key:
+            print("Error: Google API key not provided and GOOGLE_API_KEY environment variable not set")
+            sys.exit(1)
+    
+    # Run the classifier
+    try:
+        result = run_classifier(
+            json_data=json_data,
+            model_provider=args.provider,
+            model_name=args.model,
+            openai_api_key=openai_api_key,
+            google_api_key=google_api_key,
+        )
+    except Exception as e:
+        print(f"Error running classifier: {str(e)}")
+        sys.exit(1)
+    
+    # Output the result
+    output_json = json.dumps(result, indent=2)
+    
+    if args.output:
+        try:
+            with open(args.output, "w") as f:
+                f.write(output_json)
+            print(f"Result written to {args.output}")
+        except Exception as e:
+            print(f"Error writing to output file: {str(e)}")
+            sys.exit(1)
+    else:
+        print(output_json)
+
+
+if __name__ == "__main__":
+    main()
+
+
+--- FILE : vectorstore.py ---
+
+
+"""
+VectorStore setup module for RTX Classifier.
+
+This module handles loading PDF documents, extracting text,
+creating embeddings, and setting up a local ChromaDB vector store.
+"""
+import os
+import re
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import chromadb
+from chromadb.utils import embedding_functions
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import dotenv
+
+# Load environment variables
+dotenv.load_dotenv()
+
+# Constants for document chunking
+CHUNK_SIZE = 1000
+CHUNK_OVERLAP = 200
+
+# Get configuration from environment variables
+DEFAULT_COLLECTION_NAME = os.getenv("COLLECTION_NAME", "aaoifi_standards")
+DEFAULT_PERSIST_DIRECTORY = os.getenv("PERSIST_DIRECTORY", "./vectorstore")
+DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+
+
+def extract_standard_info(file_path: Path) -> Tuple[str, str]:
+    """
+    Extract the standard name and type from the PDF filename.
+    
+    Args:
+        file_path: Path to the PDF file
+        
+    Returns:
+        Tuple of (standard_name, standard_type)
+    """
+    filename = file_path.stem
+    
+    # Extract standard name (FAS4, FAS10, etc.)
+    standard_match = re.search(r'(FAS\d+|SS\d+)', filename, re.IGNORECASE)
+    standard_name = standard_match.group(1).upper() if standard_match else "UNKNOWN"
+    
+    # Determine if it's a Financial Accounting Standard or Shari'ah Standard
+    if standard_name.startswith('FAS'):
+        standard_type = "Financial Accounting Standard"
+    elif standard_name.startswith('SS'):
+        standard_type = "Shari'ah Standard"
+    else:
+        standard_type = "Unknown Standard"
+        
+    return standard_name, standard_type
+
+
+def extract_text_from_pdf(pdf_path: str) -> List[Dict[str, str]]:
+    """
+    Extract text from a PDF file and split into chunks with metadata.
+    
+    Args:
+        pdf_path: Path to the PDF file
+        
+    Returns:
+        List of text chunks with metadata
+    """
+    # Load PDF
+    loader = PyPDFLoader(pdf_path)
+    documents = loader.load()
+    
+    # Extract standard info from filename
+    path_obj = Path(pdf_path)
+    standard_name, standard_type = extract_standard_info(path_obj)
+    
+    # Split text into chunks
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP
+    )
+    chunks = text_splitter.split_documents(documents)
+    
+    # Process chunks to extract paragraph numbers and add metadata
+    processed_chunks = []
+    for i, chunk in enumerate(chunks):
+        # Try to identify paragraph numbers using regex
+        para_match = re.search(r'(\d+\.\d+(?:\.\d+)?)', chunk.page_content)
+        paragraph = para_match.group(1) if para_match else f"section-{i+1}"
+        
+        processed_chunks.append({
+            "text": chunk.page_content,
+            "metadata": {
+                "standard": standard_name,
+                "standard_type": standard_type,
+                "paragraph": paragraph,
+                "page": chunk.metadata.get("page", 0) + 1  # 1-indexed page numbers
+            }
+        })
+    
+    return processed_chunks
+
+
+def setup_chromadb(
+    persist_directory: Optional[str] = None,
+    embedding_function_name: str = "openai"
+) -> chromadb.Client:
+    """
+    Set up and return a ChromaDB client.
+    
+    Args:
+        persist_directory: Directory to persist the database (None for in-memory)
+        embedding_function_name: Name of the embedding function to use
+        
+    Returns:
+        ChromaDB client
+    """
+    # Use environment variable if persist_directory is True
+    if persist_directory is True:
+        persist_directory = DEFAULT_PERSIST_DIRECTORY
+    
+    if persist_directory:
+        os.makedirs(persist_directory, exist_ok=True)
+        # Use PersistentClient when a persistence directory is specified
+        client = chromadb.PersistentClient(path=persist_directory)
+    else:
+        # Use in-memory client when no persistence is needed
+        client = chromadb.Client()
+    
+    return client
+
+
+def get_embedding_function(name: str = "openai", **kwargs):
+    """
+    Get the specified embedding function.
+    
+    Args:
+        name: Name of the embedding function
+        **kwargs: Additional arguments for the embedding function
+        
+    Returns:
+        Embedding function
+    """
+    if name == "openai":
+        # Get API key from environment or kwargs
+         #api_key = kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+      #  if not api_key:
+          #  raise ValueError("OpenAI API key is required for OpenAI embeddings")
+        
+        # Get model name from environment or default
+     #   model_name = kwargs.get("model_name") or os.environ.get("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+        
+        # Return ChromaDB's OpenAI embedding function
+       # return embedding_functions.OpenAIEmbeddingFunction(
+           # api_key=api_key,
+          #  model_name=model_name
+       # )
+       api_key = os.environ.get("GOOGLE_API_KEY")
+       return embedding_functions.GoogleGenerativeAiEmbeddingFunction(
+           api_key=api_key,
+           model_name="models/embedding-001",
+           task_type="retrieval_document"
+       )
+       #embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", task_type="retrieval_document")
+      # return embeddings
+
+    elif name == "default":
+        # Use ChromaDB's default embedding function
+        return embedding_functions.DefaultEmbeddingFunction()
+    else:
+        raise ValueError(f"Unsupported embedding function: {name}")
+
+
+def load_docs_into_vectorstore(
+    docs_dir: str,
+    collection_name: str = None,
+    persist_directory: Optional[str] = None,
+    embedding_function_name: str = "openai",
+    **kwargs
+) -> Tuple[chromadb.Client, chromadb.Collection]:
+    """
+    Load PDF documents into a ChromaDB vector store.
+    
+    Args:
+        docs_dir: Directory containing PDF documents
+        collection_name: Name of the collection to create
+        persist_directory: Directory to persist the database
+        embedding_function_name: Name of the embedding function to use
+        **kwargs: Additional arguments for the embedding function
+        
+    Returns:
+        Tuple of (chromadb_client, collection)
+    """
+    # Use environment variables if not specified
+    if collection_name is None:
+        collection_name = DEFAULT_COLLECTION_NAME
+        
+    # Setup ChromaDB
+    client = setup_chromadb(persist_directory)
+    
+    # Get embedding function
+    embedding_func = get_embedding_function(embedding_function_name, **kwargs)
+    
+    # Create or get collection
+    collection = None
+    try:
+        # Try to get existing collection
+        collection = client.get_collection(
+            name=collection_name,
+            embedding_function=embedding_func
+        )
+        print(f"Retrieved existing collection: {collection_name}")
+    except (ValueError, chromadb.errors.NotFoundError):
+        # Collection doesn't exist, create a new one
+        collection = client.create_collection(
+            name=collection_name,
+            embedding_function=embedding_func
+        )
+        print(f"Created new collection: {collection_name}")
+    
+    # Check if collection already has documents
+    if collection.count() > 0:
+        print(f"Collection already contains {collection.count()} documents")
+        return client, collection
+    
+    # Process PDF documents
+    all_chunks = []
+    all_metadatas = []
+    all_ids = []
+    chunk_id = 0
+    
+    # Get all PDF files from docs directory
+    pdf_paths = list(Path(docs_dir).glob("*.pdf")) + list(Path(docs_dir).glob("*.PDF"))
+    
+    for pdf_path in pdf_paths:
+        print(f"Processing {pdf_path.name}...")
+        chunks = extract_text_from_pdf(str(pdf_path))
+        
+        for chunk in chunks:
+            all_chunks.append(chunk["text"])
+            all_metadatas.append(chunk["metadata"])
+            all_ids.append(f"chunk-{chunk_id}")
+            chunk_id += 1
+    
+    # Add documents to collection in batches
+    if all_chunks:
+        total_chunks = len(all_chunks)
+        print(f"Adding {total_chunks} chunks to collection in batches...")
+        
+        # Define batch size (approximately 50,000 tokens per batch)
+        # Each chunk is about CHUNK_SIZE characters, which is roughly 250-300 tokens
+        # So we'll use a batch size of ~150 chunks to stay well under the limit
+        batch_size = 150
+        
+        # Process in batches
+        for i in range(0, total_chunks, batch_size):
+            end_idx = min(i + batch_size, total_chunks)
+            print(f"Processing batch {i//batch_size + 1}/{(total_chunks-1)//batch_size + 1} ({i} to {end_idx-1})...")
+            
+            batch_chunks = all_chunks[i:end_idx]
+            batch_metadatas = all_metadatas[i:end_idx]
+            batch_ids = all_ids[i:end_idx]
+            
+            try:
+                collection.add(
+                    documents=batch_chunks,
+                    metadatas=batch_metadatas,
+                    ids=batch_ids
+                )
+            except Exception as e:
+                print(f"Error adding batch {i//batch_size + 1}: {str(e)}")
+                # If this was an OpenAI error related to token limits, try with smaller batch
+                if "max_tokens" in str(e).lower():
+                    print("Token limit exceeded. Trying with smaller batch size...")
+                    # Try with half the batch size
+                    half_batch = len(batch_chunks) // 2
+                    if half_batch > 0:
+                        try:
+                            print(f"Adding first half ({half_batch} documents)...")
+                            collection.add(
+                                documents=batch_chunks[:half_batch],
+                                metadatas=batch_metadatas[:half_batch],
+                                ids=batch_ids[:half_batch]
+                            )
+                            print(f"Adding second half ({len(batch_chunks) - half_batch} documents)...")
+                            collection.add(
+                                documents=batch_chunks[half_batch:],
+                                metadatas=batch_metadatas[half_batch:],
+                                ids=batch_ids[half_batch:]
+                            )
+                        except Exception as e2:
+                            print(f"Error with half batches: {str(e2)}")
+                            # In case of persistent errors, skip this batch
+                            print("Skipping problematic batch...")
+        
+        print("Documents added successfully")
+    else:
+        print("No documents found to add")
+        
+    return client, collection
+
+
+def get_or_create_vectorstore(
+    docs_dir: Optional[str] = None,
+    collection_name: str = None,
+    persist_directory: Optional[str] = None,
+    embedding_function_name: str = "openai",
+    **kwargs
+) -> Tuple[chromadb.Client, chromadb.Collection]:
+    """
+    Get or create a vector store from PDF documents.
+    
+    Args:
+        docs_dir: Directory containing PDF documents (None to use default)
+        collection_name: Name of the collection to create or retrieve
+        persist_directory: Directory to persist the database
+        embedding_function_name: Name of the embedding function to use
+        **kwargs: Additional arguments for the embedding function
+        
+    Returns:
+        Tuple of (chromadb_client, collection)
+    """
+    # Use default docs directory if not provided
+    if docs_dir is None:
+        docs_dir = str(Path(__file__).parent.parent.parent / "docs")
+    
+    # Use environment variable values if not explicitly provided
+    if collection_name is None:
+        collection_name = DEFAULT_COLLECTION_NAME
+        
+    # Use default persist directory if not provided and persistence is desired
+    if persist_directory is True:
+        persist_directory = DEFAULT_PERSIST_DIRECTORY
+    
+    return load_docs_into_vectorstore(
+        docs_dir=docs_dir,
+        collection_name=collection_name,
+        persist_directory=persist_directory,
+        embedding_function_name=embedding_function_name,
+        **kwargs
+    )
+
+
+if __name__ == "__main__":
+    """
+    Script entry point for creating the vectorstore from command line.
+    """
+    import argparse
+    
+    # Make sure environment variables are loaded
+    dotenv.load_dotenv()
+    
+    parser = argparse.ArgumentParser(description="Load PDF documents into a vector store")
+    parser.add_argument("--docs-dir", help="Directory containing PDF documents")
+    parser.add_argument("--persist-dir", help=f"Directory to persist the database (default: {DEFAULT_PERSIST_DIRECTORY})")
+    parser.add_argument("--collection", help=f"Collection name (default: {DEFAULT_COLLECTION_NAME})")
+    parser.add_argument("--embeddings", default="openai", help="Embedding function (openai or default)")
+    
+    args = parser.parse_args()
+    
+    client, collection = get_or_create_vectorstore(
+        docs_dir=args.docs_dir,
+        collection_name=args.collection,
+        persist_directory=args.persist_dir or True,  # Default to using persistence
+        embedding_function_name=args.embeddings
+    )
+    
+    print(f"Collection {collection.name} created with {collection.count()} documents")
+
+
+--- FILE : __init__.py ---
+
+
+"""
+RTX Classifier - Reverse-Transaction Classifier for AAOIFI Standards.
+
+This package classifies accounting transactions according to AAOIFI
+Financial Accounting Standards (FAS).
+"""
+
+__version__ = "0.1.0"
+
+
+--- FILE : nodes/calibrate.py ---
+
+
+"""
+CalibrateNode for the RTX Classifier.
+
+Applies temperature scaling to logits to convert them to calibrated probabilities.
+"""
+from typing import Dict, List, Any, Optional
+import os
+import dotenv
+import numpy as np
+from scipy.special import softmax
+
+# Load environment variables
+dotenv.load_dotenv()
+
+# Get configuration from environment variables
+DEFAULT_CALIBRATION_TEMP = float(os.getenv("CALIBRATION_TEMP", "0.4"))
+
+
+class CalibrateNode:
+    """
+    CalibrateNode that calibrates the averaged logits using temperature scaling.
+    
+    Temperature scaling is a simple but effective calibration method that
+    divides the logits by a temperature parameter before applying softmax.
+    Higher temperature values smooth out the probability distribution.
+    """
+    
+    def __init__(self, temperature: float = None):
+        """
+        Initialize the CalibrateNode.
+        
+        Args:
+            temperature: Temperature scaling parameter (T > 1.0 smooths probabilities)
+        """
+        self.temperature = temperature if temperature is not None else DEFAULT_CALIBRATION_TEMP
+    
+    def _apply_temperature_scaling(self, logits: List[float]) -> List[float]:
+        """
+        Apply temperature scaling to logits.
+        
+        Args:
+            logits: Raw logit values
+            
+        Returns:
+            Calibrated probabilities
+        """
+        # Convert to numpy array
+        logits_array = np.array(logits)
+        
+        # Apply temperature scaling
+        scaled_logits = logits_array / 0.4
+        
+        # Apply softmax to get probabilities
+        probabilities = softmax(scaled_logits).tolist()
+        
+        return probabilities
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and calibrate logits to probabilities.
+        
+        Args:
+            state: Input state with averaged logits
+            
+        Returns:
+            Updated state with calibrated probabilities
+        """
+        # Make a copy to avoid modifying the input
+        new_state = dict(state)
+        print(f"DEBUG: CalibrateNode: Entry state valid: {new_state.get('valid')}")
+        print(f"DEBUG: CalibrateNode: Entry state avg_logits: {new_state.get('avg_logits')}")
+        print(f"DEBUG: CalibrateNode: Entry provisional rationale: {new_state.get('provisional_rationale')}")
+
+        print(f"DEBUG: CAlibrateNode: Entry state: {new_state}")
+
+        # Check if previous steps failed
+        if not new_state.get("valid", False):
+            print("DEBUG: CalibrateNode: Exiting early, state not valid.")
+            return new_state
+        
+        # Get averaged logits
+        avg_logits = new_state.get("avg_logits")
+        
+        # Check if we have valid data
+        if avg_logits is None:
+            new_state["error_message"] = "No logits to calibrate"
+            new_state["valid"] = False
+            print("DEBUG: CalibrateNode: Exiting, avg_logits is None.")
+            # Ensure prob_vector is empty if calibration fails this way
+            new_state["prob_vector"] = [] 
+            return new_state
+        
+        # Ensure avg_logits is not empty before scaling
+        if not avg_logits: # Check for empty list specifically
+            new_state["error_message"] = "Cannot calibrate empty avg_logits"
+            new_state["valid"] = False
+            new_state["prob_vector"] = []
+            print("DEBUG: CalibrateNode: Exiting, avg_logits is empty list.")
+            return new_state
+            
+        # Apply temperature scaling
+        probabilities = self._apply_temperature_scaling(avg_logits)
+        
+        # Store the probabilities in the state
+        new_state["prob_vector"] = probabilities
+        
+        return new_state
+
+
+--- FILE : nodes/classify.py ---
+
+
+"""
+ClassifyFanOutNode for the RTX Classifier.
+
+Runs parallel LLM calls with few-shot Chain-of-Thought for classification.
+Supports both OpenAI and Google Gemini models.
+"""
+from typing import Dict, List, Any, Optional, Callable
+import json
+import os
+from pathlib import Path
+import random
+import dotenv
+
+# Load environment variables
+dotenv.load_dotenv()
+
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_core.exceptions import  OutputParserException # Changed import
+
+# Standard labels for classification
+LABELS = ["FAS4", "FAS7", "FAS10", "FAS28", "FAS32"]
+
+# Full names for standard citations
+STANDARD_FULL_NAMES = {
+    "FAS4": "FAS 4: Musharaka financing",
+    "FAS7": "FAS 7: Salam and Parallel Salam",
+    "FAS10": "FAS 10: Istisna'a and Parallel Istisna'a",
+    "FAS28": "FAS 28: Murabaha and Other Deferred Payment Sales",
+    "FAS32": "FAS 32: Ijara and Ijara Muntahia Bittamleek",
+}
+
+# Get configuration from environment variables
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
+FALLBACK_TEMPERATURE = float(os.getenv("FALLBACK_TEMPERATURE", "0.3"))
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
+DEFAULT_MODEL_PROVIDER = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
+GOOGLE_DEFAULT_MODEL = os.getenv("GOOGLE_DEFAULT_MODEL", "gemini-pro") # Added for Google specific model
+
+
+class ClassifyFanOutNode:
+    """
+    ClassifyFanOutNode that runs multiple parallel LLM calls for classification.
+    Uses few-shot Chain-of-Thought prompting with JSON mode enabled.
+    """
+    
+    def __init__(
+        self,
+        llm: Optional[BaseChatModel] = None,
+        num_parallel: int = 3,
+        template_path: Optional[str] = None,
+        output_parser: Optional[Callable] = None,
+    ):
+        """
+        Initialize the ClassifyFanOutNode.
+        
+        Args:
+            llm: LangChain chat model instance
+            num_parallel: Number of parallel LLM calls to make
+            template_path: Path to the Jinja template for prompting
+            output_parser: Custom output parser function
+        """
+        self.llm = llm
+        self.num_parallel = num_parallel
+        self.template_path = template_path
+        self.output_parser = output_parser or JsonOutputParser()
+        
+        # Load prompt template if path is provided
+        self._prompt_template = None
+        if template_path:
+            self._load_template(template_path)
+    
+    def _load_template(self, template_path: str):
+        """Load template from the specified path."""
+        try:
+            template_dir = Path(__file__).parent.parent / "templates"
+            # Handle both cases: full filename or just the base name
+            if os.path.isabs(template_path):
+                template_file = Path(template_path)
+            else:
+                template_file = template_dir / template_path
+            
+            # Add .jinja extension if not present
+            if not template_file.exists() and not str(template_path).endswith(".jinja"):
+                template_file = template_dir / f"{template_path}.jinja"
+            
+            if template_file.exists():
+                template_content = template_file.read_text(encoding='utf-8')
+                
+                # Create proper template with jinja2 format
+                try:
+                    self._prompt_template = PromptTemplate.from_template(
+                        template_content,
+                        template_format="jinja2"
+                    )
+                    return
+                except Exception as template_error:
+                    print(f"Error creating template from file {template_file}: {template_error}")
+            else:
+                print(f"Template file not found: {template_file}")
+        except Exception as e:
+            print(f"Failed to load template {template_path}: {e}")
+        
+        # Fall back to default template if loading fails or file doesn't exist
+        print("Using default template instead")
+        self._prompt_template = self._get_default_template()
+
+    def _get_default_template(self) -> PromptTemplate: # Corrected return type hint
+        """Get default template for classification."""
+        template = """
+        You are a financial auditor specializing in AAOIFI (Accounting and Auditing Organization for Islamic Financial Institutions) standards.
+
+        Analyze the following accounting transaction and determine which AAOIFI FAS standard applies best.
+
+        Transaction entries:
+        {% for entry in entries %}
+        {% if entry.debit %}Dr. {{ entry.account }}: {{ entry.debit }}{% endif %}
+        {% if entry.credit %}Cr. {{ entry.account }}: {{ entry.credit }}{% endif %}
+        {% endfor %}
+        
+        {% if context %}
+        Context: {{ context }}
+        {% endif %}
+        
+        {% if adjustments %}
+        Adjustments: {{ adjustments }}
+        {% endif %}
+        
+        {% if accounting_treatment %}
+        Accounting treatment: {{ accounting_treatment }}
+        {% endif %}
+        
+        The transaction should be classified according to one of these AAOIFI standards:
+        - FAS 4: Musharaka financing
+        - FAS 7: Salam and Parallel Salam
+        - FAS 10: Istisna'a and Parallel Istisna'a
+        - FAS 28: Murabaha and Other Deferred Payment Sales
+        - FAS 32: Ijara and Ijara Muntahia Bittamleek
+        
+        {% if excluded_standards is defined and excluded_standards %}
+        IMPORTANT: The following standards are to be EXCLUDED. Their corresponding confidence scores (logits) in the output MUST be extremely low (near zero):
+        {% for standard in excluded_standards %}
+        - {{ standard }} (This refers to {{ STANDARD_FULL_NAMES.get(standard, 'Unknown Standard') }})
+        {% endfor %}
+        Remember, the logits array corresponds to [FAS4, FAS7, FAS10, FAS28, FAS32].
+        {% endif %}
+
+        Based on the retrieved sources:
+        {% for text in retrieved_texts %}
+        --- Source {{loop.index}} ---
+        {{ text }}
+        {% endfor %}
+        
+        Think through this step by step:
+        1. Identify the accounts involved and their nature
+        2. Determine the transaction type based on account names and flow
+        3. Match the transaction characteristics to AAOIFI standards
+        4. Consider any specific requirements in the applicable standard, including referencing specific paragraphs from the standard.
+        
+        Finally, provide your classification and reasoning in this JSON format:
+        {
+          "logits": [float, float, float, float, float],  // Confidence scores for each standard in order: FAS4, FAS7, FAS10, FAS28, FAS32
+          "rationale": "Your detailed reasoning for the classification. This reasoning MUST clearly state the determined AAOIFI standard and include specific paragraph citations from the retrieved AAOIFI sources (e.g., 'As per FAS 10, paragraph 3.1, ... which indicates this transaction is Istisna\\'a because...'). Ensure the reasoning directly supports the chosen classification."
+        }
+        
+        Your logits should sum to 1.0 representing a probability distribution.
+        """
+        return PromptTemplate.from_template(
+            template,
+            template_format="jinja2",
+            partial_variables={"STANDARD_FULL_NAMES": STANDARD_FULL_NAMES}
+            # Removed explicit input_variables to let them be inferred by from_template
+            # input_variables=["entries", "context", "adjustments", "accounting_treatment", "retrieved_texts"]
+        )
+
+    def _get_prompt_template(self):
+        """Get the prompt template, loading default if needed."""
+        if not self._prompt_template:
+            if self.template_path:
+                self._load_template(self.template_path)
+            else:
+                self._prompt_template = self._get_default_template()
+        return self._prompt_template
+    
+    def _run_single_classification(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Run a single LLM classification."""
+        if not self.llm:
+            raise ValueError("LLM is not initialized")
+        
+        # Get the prompt template
+        prompt = self._get_prompt_template()
+        
+        # Prepare variables for the template
+        inputs = {
+            "entries": state.get("entries", []),
+            "context": state.get("context"),
+            "adjustments": state.get("adjustments"),
+            "accounting_treatment": state.get("accounting_treatment"),
+            "retrieved_texts": state.get("retrieved_texts", [])[:5],  # Limit to avoid context overflow
+            "excluded_standards": state.get("excluded_standards", []), # Added for exclusions
+        }
+        
+        # Create and run the chain
+        chain = prompt | self.llm | self.output_parser
+        
+        # Call the LLM and parse the output
+        try:
+            result = chain.invoke(inputs) # This can raise OutputParsingError
+            
+            # If chain.invoke() was successful, JsonOutputParser ensures 'result' is a dict.
+            logits = result.get("logits", [])
+            rationale = result.get("rationale", "")
+
+            
+            
+            # Check logits
+            if not isinstance(logits, list) or len(logits) != 5:
+                raise ValueError(f"Expected 5 logits, got: {logits}")
+            
+            # Normalize logits if they don't sum to 1.0
+            logits_sum = sum(logits)
+            if abs(logits_sum - 1.0) > 0.01: # Using 0.01 tolerance
+                if logits_sum == 0: # Avoid division by zero
+                    # If sum is 0, cannot normalize, treat as an error or assign uniform distribution.
+                    # For now, let's keep it as an issue that might lead to "N/A" classification.
+                    print("Warning: Sum of logits is 0, cannot normalize. Classification might be N/A.")
+                else:
+                    logits = [v / logits_sum for v in logits]
+
+            classification = "N/A"
+            standard_citation = "N/A"
+            if logits and len(logits) == len(LABELS): # Ensure logits is not empty and matches LABELS length
+                try:
+                    max_logit_index = logits.index(max(logits))
+                    classification = LABELS[max_logit_index]
+                    standard_citation = STANDARD_FULL_NAMES.get(classification, "Unknown standard name")
+                except ValueError: # max() on empty sequence or other value errors
+                    print(f"Error determining classification from logits: {logits}")
+            else:
+                print(f"Logits list is empty or length mismatch: {logits}")
+                
+            return {
+                "logits": logits,
+                "rationale": rationale,
+                "classification": classification,
+                "standard_citation": standard_citation
+            }
+            
+        except  OutputParserException as ope:
+            # Handle cases where the LLM output was not valid JSON
+            error_message = str(ope)
+            llm_output_snippet = "Not available"
+            if hasattr(ope, 'llm_output') and ope.llm_output:
+                llm_output_snippet = str(ope.llm_output)[:200] # Get first 200 chars
+
+            print(f"Classification OutputParsingError: {error_message}. Raw LLM output snippet: '{llm_output_snippet}'")
+            return {
+                "logits": [0.2, 0.2, 0.2, 0.2, 0.2],  # Equal probabilities
+                "rationale": "Failed to parse LLM output. The response was not in the expected JSON format.",
+                "classification": "Error",
+                "standard_citation": "Error parsing LLM output"
+            }
+            
+        except Exception as e: # Catches ValueErrors from logit checks, or other unexpected errors
+            # Return default values on error
+            print(f"Classification error: {e}")
+            return {
+                "logits": [0.2, 0.2, 0.2, 0.2, 0.2],  # Equal probabilities
+                "rationale": f"Failed to classify: {str(e)}", # Original rationale format for other errors
+                "classification": "Error",
+                "standard_citation": f"Error during classification: {str(e)}"
+            }
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and run classification.
+        
+        Args:
+            state: Input state with transaction entries and retrieved texts
+            
+        Returns:
+            Updated state with classification results
+        """
+        # Make a copy to avoid modifying the input
+        new_state = dict(state)
+        
+        # Check if previous steps failed
+        if not new_state.get("valid", False):
+            return new_state
+        
+        # Apply temporary temperature if it's a retry
+        temp_param = {}
+        if new_state.get("retry_count", 0) > 0:
+            temp_param = {"temperature": float(os.getenv("FALLBACK_TEMPERATURE", FALLBACK_TEMPERATURE))}
+        
+        # Make a copy of the LLM with potentially modified parameters
+        current_llm = None
+        if self.llm:
+            if isinstance(self.llm, ChatOpenAI):
+                # Handle OpenAI LLM
+                llm_params = self.llm.model_dump()
+                llm_params.update(temp_param)
+                current_llm = ChatOpenAI(**llm_params)
+            elif isinstance(self.llm, ChatGoogleGenerativeAI):
+                # Handle Google Gemini LLM
+                llm_params = self.llm.model_dump()
+                if temp_param:
+                    llm_params["temperature"] = temp_param["temperature"]
+                current_llm = ChatGoogleGenerativeAI(**llm_params)
+            else:
+                # Default fallback
+                current_llm = self.llm
+        else:
+            # Create a default LLM if none was provided
+            model_provider = os.getenv("DEFAULT_MODEL_PROVIDER", "openai").lower()
+            if model_provider == "openai":
+                current_llm = ChatOpenAI(
+                    model_name=DEFAULT_MODEL,
+                    temperature=DEFAULT_TEMPERATURE if not temp_param else temp_param["temperature"],
+                )
+            elif model_provider == "google":
+                current_llm = ChatGoogleGenerativeAI(
+                    model=GOOGLE_DEFAULT_MODEL,  # Use GOOGLE_DEFAULT_MODEL
+                    temperature=DEFAULT_TEMPERATURE if not temp_param else temp_param["temperature"],
+                )
+        
+        # Create a temporary node with the current LLM
+        temp_node = ClassifyFanOutNode(
+            llm=current_llm,
+            num_parallel=self.num_parallel,
+            template_path=self.template_path,
+            output_parser=self.output_parser
+        )
+        
+        # Run parallel classifications
+        logits_list = []
+        rationales = []
+        classifications = [] # Added
+        standard_citations = [] # Added
+        
+        for _ in range(self.num_parallel):
+            result = temp_node._run_single_classification(new_state)
+            logits_list.append(result["logits"])
+            rationales.append(result["rationale"])
+            classifications.append(result["classification"]) # Added
+            standard_citations.append(result["standard_citation"]) # Added
+        
+        # Store results in state
+        new_state["logits"] = logits_list
+        new_state["rationales"] = rationales
+        new_state["classifications"] = classifications # Added
+        new_state["standard_citations"] = standard_citations # Added
+        
+        return new_state
+
+
+--- FILE : nodes/compose.py ---
+
+
+"""
+ComposeNode for the RTX Classifier.
+
+Composes the final output JSON with probabilities, rationale, and sources.
+"""
+from typing import Dict, List, Any, Optional
+
+
+class ComposeNode:
+    """
+    ComposeNode that composes the final output for the RTX Classifier.
+    
+    This node prepares the final output, focusing on the probability vector.
+    """
+    
+    def __init__(self):
+        """Initialize the ComposeNode."""
+        pass
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and compose the final output.
+        
+        Args:
+            state: Input state with probability vector and validity status.
+            
+        Returns:
+            Final output state with prob_vector and validity.
+        """
+        new_state = dict(state)
+        
+        # print(f"ComposeNode input state: valid={new_state.get('valid', False)}, error_message={new_state.get('error_message')}")
+        
+        prob_vector_to_return = new_state.get("prob_vector", [0.0, 0.0, 0.0, 0.0, 0.0])
+        is_valid = new_state.get("valid", False)
+        error_msg_to_propagate = new_state.get('error_message')
+        rationale = new_state.get("final_rationale", None)
+        label = new_state.get("final_classification_label", None)
+        alternative_standards = new_state.get("alternative_standards", None)
+
+
+
+        # Ensure prob_vector has 5 elements, providing a default if not, especially on error
+        if not isinstance(prob_vector_to_return, list) or len(prob_vector_to_return) != 5:
+            # print(f"Warning: prob_vector in ComposeNode is not a list of 5 elements. Received: {prob_vector_to_return}. Using default error state vector.")
+            prob_vector_to_return = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
+            is_valid = False # If prob_vector is malformed, consider it an invalid state for output
+            if not error_msg_to_propagate:
+                error_msg_to_propagate = "Output probability vector malformed."
+
+        final_output = {
+            "prob_vector": prob_vector_to_return,
+            "valid": is_valid,
+            "rationale": rationale,
+            "label": label,	
+            "alternative_standards": alternative_standards
+        }
+
+        if not is_valid:
+            final_output["error_message"] = error_msg_to_propagate or "Processing failed for an unspecified reason."
+        
+        # print(f"ComposeNode final output: {final_output}")
+        
+        # Remove fields that are no longer part of the primary output focus
+        # These might still be in the state from previous nodes but are not part of the final desired output.
+        
+        # The graph execution will return the full state dictionary from the last node.
+        # We are modifying the state `new_state` here which will be returned by the graph.
+        # The `run_classifier` function will then select which keys from this state to put in its own return dict.
+        
+        # For the state that ComposeNode itself returns (which becomes the graph's final state):
+        # We want it to be clean, primarily containing what `run_classifier` will pick up.
+        # However, LangGraph typically returns the full state of the last executed node.
+        # So, the filtering should ideally happen in `run_classifier` when preparing its return value.
+        # For now, just ensure the primary targeted outputs are correct in `new_state`.
+
+        new_state["prob_vector"] = final_output["prob_vector"]
+        new_state["valid"] = final_output["valid"]
+        new_state["final_classification_label"] = final_output["label"]
+        new_state["final_rationale"] = final_output["rationale"]
+        new_state["alternative_standards"] = final_output["alternative_standards"]
+        # If there is an error message in the final output, propagate it to the new state
+        if "error_message" in final_output:
+            new_state["error_message"] = final_output["error_message"]
+        else:
+            new_state.pop("error_message", None)
+
+        print(f"DBUG: cOMPOSENODE: ALTERNATIVE STANDARDS: {new_state.get('alternative_standards')}")
+            
+        return new_state
+
+
+--- FILE : nodes/preprocess.py ---
+
+
+"""
+PreprocessNode for the RTX Classifier.
+
+Responsible for schema validation, balance checks, and forbidden account validation.
+"""
+from dataclasses import dataclass
+from typing import Dict, List, Any, Optional, Union, cast
+
+from langgraph.graph import StateGraph
+
+
+@dataclass
+class AccountEntry:
+    """Represents a single accounting entry."""
+    account: str
+    debit: float
+    credit: float
+
+
+class PreprocessNode:
+    """
+    Preprocessing node that validates input data:
+    - Schema validation
+    - Balance checks (debits = credits)
+    - Forbidden account checks
+    """
+    
+    def __init__(self, forbidden_accounts: Optional[List[str]] = None):
+        """
+        Initialize the PreprocessNode.
+        
+        Args:
+            forbidden_accounts: List of accounts that should not appear in valid transactions
+        """
+        self.forbidden_accounts = forbidden_accounts or []
+    
+    def validate_schema(self, state: Dict[str, Any]) -> bool:
+        """
+        Validate the input schema.
+        
+        Args:
+            state: Current state with entries to validate
+            
+        Returns:
+            True if valid, False otherwise
+        """
+        entries = state.get("entries", [])
+        
+        # Check if entries is a list
+        if not isinstance(entries, list):
+            state["error_message"] = "Entries must be a list of account objects"
+            return False
+        
+        # Check if all entries have required fields
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                state["error_message"] = f"Entry {i} is not an object"
+                return False
+            
+            if "account" not in entry:
+                state["error_message"] = f"Entry {i} missing 'account' field"
+                return False
+            
+            if not isinstance(entry["account"], str):
+                state["error_message"] = f"Entry {i} 'account' must be a string"
+                return False
+            
+            # Check debit and credit fields
+            if "debit" not in entry and "credit" not in entry:
+                state["error_message"] = f"Entry {i} missing both 'debit' and 'credit' fields"
+                return False
+            
+            if "debit" in entry and not isinstance(entry["debit"], (int, float)):
+                state["error_message"] = f"Entry {i} 'debit' must be a number"
+                return False
+            
+            if "credit" in entry and not isinstance(entry["credit"], (int, float)):
+                state["error_message"] = f"Entry {i} 'credit' must be a number"
+                return False
+        
+        return True
+    
+    def check_balance(self, state: Dict[str, Any]) -> bool:
+        """
+        Check if debits equal credits.
+        
+        Args:
+            state: Current state with entries to validate
+            
+        Returns:
+            True if balanced, False otherwise
+        """
+        entries = state.get("entries", [])
+        total_debits = sum(entry.get("debit", 0.0) for entry in entries)
+        total_credits = sum(entry.get("credit", 0.0) for entry in entries)
+        
+        # Use a small epsilon to account for floating point rounding errors
+        epsilon = 0.0001
+        if abs(total_debits - total_credits) > epsilon:
+            state["error_message"] = f"Transaction is not balanced: debits ({total_debits}) â‰  credits ({total_credits})"
+            return False
+        
+        return True
+    
+    def check_forbidden_accounts(self, state: Dict[str, Any]) -> bool:
+        """
+        Check if any forbidden accounts are used.
+        
+        Args:
+            state: Current state with entries to validate
+            
+        Returns:
+            True if no forbidden accounts, False otherwise
+        """
+        if not self.forbidden_accounts:
+            return True
+            
+        entries = state.get("entries", [])
+        for entry in entries:
+            if entry.get("account") in self.forbidden_accounts:
+                state["error_message"] = f"Forbidden account used: {entry.get('account')}"
+                return False
+        
+        return True
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and validate the transaction data.
+        
+        Args:
+            state: Input state with transaction entries
+            
+        Returns:
+            Updated state with validation results
+        """
+        # Make a copy to avoid modifying the input
+        new_state = dict(state)
+        
+        # Validate schema
+        if not self.validate_schema(new_state):
+            new_state["valid"] = False
+            return new_state
+        
+        # Check balance
+        if not self.check_balance(new_state):
+            new_state["valid"] = False
+            return new_state
+        
+        # Check forbidden accounts
+        if not self.check_forbidden_accounts(new_state):
+            new_state["valid"] = False
+            return new_state
+        
+        # All checks passed
+        new_state["valid"] = True
+        return new_state
+
+
+--- FILE : nodes/rationale.py ---
+
+
+"""
+RationaleNode for the RTX Classifier.
+
+Generates an explanation for the classification based on various inputs including
+retrieved texts, transaction details, and classification results.
+"""
+import os
+from typing import Dict, Any, Optional, List
+
+import dotenv
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+
+# Load environment variables
+dotenv.load_dotenv()
+
+# Get configuration from environment variables
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
+DEFAULT_MODEL_PROVIDER = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
+
+class RationaleNode:
+    """
+    RationaleNode: This node is currently bypassed and does not generate explanations.
+    It passes the state through without modification related to rationale generation.
+    """
+
+    def __init__(
+        self,
+        llm: Optional[BaseChatModel] = None, # Kept for signature compatibility, but not used
+        template_path: Optional[str] = None, # Kept for signature compatibility, but not used
+    ):
+        """
+        Initialize the RationaleNode. LLM and template are not actively used.
+        """
+        # self.llm = llm # Not used
+        # self.output_parser = JsonOutputParser() # Not used
+        # self._prompt_template = self._get_default_template() # Not used
+        print("RationaleNode initialized (currently bypassed for explanation generation).")
+
+    def _get_default_template(self) -> Optional[ChatPromptTemplate]:
+        """
+        Returns None as the template is not used.
+        """
+        return None
+
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Passes the state through without generating an explanation.
+
+        Args:
+            state: Input state from the previous node.
+
+        Returns:
+            The same input state, with a note that rationale was skipped.
+        """
+        new_state = dict(state)
+        # print("RationaleNode: Bypassed, passing state through.")
+        return new_state
+
+# Example Usage (for testing RationaleNode independently)
+# if __name__ == '__main__':
+#     # This is a simplified example. In a real pipeline, state would be richer.
+#     mock_state = {
+#         "entries": [{"description": "Sale of goods to Customer A for $1000"}],
+#         "context": "End of Q2 reporting period.",
+#         "adjustments": None,
+#         "accounting_treatment": None,
+#         "provisional_label_name": "Revenue",
+#         "prob_vector": [0.1, 0.8, 0.05, 0.05], # Assuming Revenue is the second label
+#         "retrieved_texts": [
+#             "AAOIFI FAS 10, Para 15: Revenue from core operations is recognized when earned.",
+#             "Company Policy Sec 4.1: All sales of goods are considered core operational revenue."
+#         ],
+#         "valid": True # Assuming previous steps were valid
+#     #
+#     # Initialize with default LLM (requires OPENAI_API_KEY or GOOGLE_API_KEY)
+#     # Ensure your .env file is set up or keys are in environment
+#     try:
+#         rationale_node = RationaleNode()
+#         updated_state = rationale_node(mock_state)
+#         print("Updated State from RationaleNode:")
+#         import json
+#         print(json.dumps(updated_state, indent=2))
+#     except Exception as e:
+#         print(f"Error initializing or running RationaleNode: {e}")
+#
+# # End of file
+
+
+
+--- FILE : nodes/retrieve.py ---
+
+
+"""
+RetrieveNode for the RTX Classifier.
+
+Performs semantic search over pre-embedded AAOIFI FAS 4/7/10/28/32 corpus using ChromaDB.
+"""
+from typing import Dict, List, Any, Optional
+import os
+from dataclasses import dataclass
+import dotenv
+import json
+import requests
+
+# Load environment variables
+dotenv.load_dotenv()
+
+import chromadb
+import numpy as np
+import cohere
+from langchain_openai import OpenAIEmbeddings
+
+from rtx_classifier.vectorstore import get_or_create_vectorstore, get_embedding_function
+
+# Get configuration from environment variables
+DEFAULT_COLLECTION_NAME = os.getenv("COLLECTION_NAME", "aaoifi_standards")
+DEFAULT_PERSIST_DIRECTORY = os.getenv("PERSIST_DIRECTORY", "./vectorstore")
+TOP_K_RETRIEVAL = int(os.getenv("TOP_K_RETRIEVAL", "10"))
+USE_RERANKER = os.getenv("USE_RERANKER", "true").lower() == "true"
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "rerank-english-v3.0")
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")
+
+
+@dataclass
+class RetrievedDocument:
+    """A document retrieved from the vector database."""
+    text: str
+    standard: str  # e.g., "FAS4", "FAS7", etc.
+    paragraph: str  # e.g., "3.1.2"
+    score: float
+
+
+class RetrieveNode:
+    """
+    Retrieval node that performs semantic search over AAOIFI standards.
+    Uses ChromaDB as the vector database and optionally Cohere's reranker
+    for improved results quality.
+    """
+    
+    def __init__(
+        self, 
+        docs_dir: Optional[str] = None,
+        collection_name: str = None,
+        persist_directory: Optional[str] = None,
+        embedding_function_name: str = "openai",
+        top_k: int = None,
+        use_reranker: bool = None,
+    ):
+        """
+        Initialize the RetrieveNode.
+        
+        Args:
+            docs_dir: Directory containing PDF documents
+            collection_name: Name of the collection to use
+            persist_directory: Directory to persist the database
+            embedding_function_name: Name of the embedding function to use
+            top_k: Number of documents to retrieve
+            use_reranker: Whether to use Cohere's reranker for improved results
+        """
+        self.docs_dir = docs_dir
+        self.collection_name = collection_name or DEFAULT_COLLECTION_NAME
+        
+        # Handle persist_directory=True to use the environment variable
+        if persist_directory is True:
+            self.persist_directory = DEFAULT_PERSIST_DIRECTORY
+        else:
+            self.persist_directory = persist_directory
+            
+        self.embedding_function_name = embedding_function_name
+        self.top_k = top_k or TOP_K_RETRIEVAL
+        self.use_reranker = use_reranker if use_reranker is not None else USE_RERANKER
+        self._client = None
+        self._collection = None
+        self._embeddings = None
+        self._langchain_embeddings = None
+        self._cohere_client = None
+    
+    def _get_collection(self):
+        """Initialize and return the ChromaDB collection."""
+        if self._collection is None:
+            # Initialize the vector store (creates or loads existing)
+            self._client, self._collection = get_or_create_vectorstore(
+                docs_dir=self.docs_dir,
+                collection_name=self.collection_name,
+                persist_directory=self.persist_directory,
+                embedding_function_name=self.embedding_function_name
+            )
+                
+        return self._collection
+    
+    def _get_embeddings(self):
+        """Get the embedding function for queries."""
+        if self._embeddings is None:
+            # Use the same embedding function as the collection
+            self._embeddings = get_embedding_function(self.embedding_function_name)
+                
+        return self._embeddings
+    
+    def _get_langchain_embeddings(self):
+        """Get LangChain embeddings for embed_query."""
+        if self._langchain_embeddings is None:
+            # Use LangChain's OpenAI embeddings
+            model_name = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+            self._langchain_embeddings = OpenAIEmbeddings(model=model_name)
+        return self._langchain_embeddings
+    
+    def _get_cohere_client(self):
+        """Initialize and return the Cohere client."""
+        if self._cohere_client is None:
+            if not COHERE_API_KEY:
+                print("Warning: COHERE_API_KEY environment variable is not set.")
+                print("Using a fake client for demonstration purposes only.")
+                # Create a mock client for demonstration
+                self._cohere_client = None
+            else:
+                self._cohere_client = cohere.Client(COHERE_API_KEY)
+        return self._cohere_client
+    
+    def _embed_query(self, query: str) -> List[float]:
+        """
+        Embed the query for semantic search.
+        
+        Args:
+            query: Query string to embed
+            
+        Returns:
+            Embedding vector for the query
+        """
+        try:
+            # First try LangChain embeddings which are guaranteed to have embed_query method
+            langchain_embeddings = self._get_langchain_embeddings()
+            return langchain_embeddings.embed_query(query)
+        except Exception as e:
+            # If that fails, try different approaches with the ChromaDB embedding function
+            embeddings = self._get_embeddings()
+            
+            try:
+                # Try ChromaDB OpenAIEmbeddingFunction style - it uses a direct function call
+                if callable(embeddings):
+                    # ChromaDB embedding functions are callable directly with a list of strings
+                    return embeddings([query])[0]
+                # Try embed_documents method (some embedding functions have this)
+                elif hasattr(embeddings, 'embed_documents'):
+                    return embeddings.embed_documents([query])[0]
+                # Final fallback - try direct embedding with __call__
+                else:
+                    return embeddings([query])[0]
+            except Exception as nested_e:
+                raise Exception(f"All embedding methods failed. Primary error: {str(e)}. Fallback error: {str(nested_e)}")
+    
+    def _format_entries_for_search(self, state: Dict[str, Any]) -> str:
+        """
+        Format the transaction entries for semantic search.
+        
+        Args:
+            state: Current state with transaction entries
+            
+        Returns:
+            Formatted query string
+        """
+        entries = state.get("entries", [])
+        formatted_entries = []
+        
+        for entry in entries:
+            account = entry.get("account", "")
+            debit = entry.get("debit", 0.0)
+            credit = entry.get("credit", 0.0)
+            
+            if debit > 0:
+                formatted_entries.append(f"Dr. {account}: {debit}")
+            if credit > 0:
+                formatted_entries.append(f"Cr. {account}: {credit}")
+        
+        query = "Transaction entries:\n" + "\n".join(formatted_entries)
+        
+        # Add optional context if available
+        context = state.get("context")
+        if context:
+            query += f"\n\nContext: {context}"
+            
+        adjustments = state.get("adjustments")
+        if adjustments:
+            query += f"\n\nAdjustments: {adjustments}"
+            
+        treatment = state.get("accounting_treatment")
+        if treatment:
+            query += f"\n\nAccounting treatment: {treatment}"
+            
+        return query
+    
+    def _query_vectorstore(self, query_text: str) -> List[RetrievedDocument]:
+        """
+        Query the vector store for relevant documents.
+        
+        Args:
+            query_text: Query text to search for
+            
+        Returns:
+            List of retrieved documents with metadata
+        """
+        collection = self._get_collection()
+        
+        # Get query embedding using LangChain embeddings
+        query_embedding = self._embed_query(query_text)
+        
+        # Query the collection
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=self.top_k,
+            include=["documents", "metadatas", "distances"]
+        )
+        
+        documents = []
+        for i in range(len(results["documents"][0])):
+            text = results["documents"][0][i]
+            metadata = results["metadatas"][0][i]
+            distance = results["distances"][0][i]
+            
+            # Convert distance to similarity score (1 - normalized distance)
+            score = 1.0 - min(distance, 1.0)
+            
+            doc = RetrievedDocument(
+                text=text,
+                standard=metadata.get("standard", ""),
+                paragraph=metadata.get("paragraph", ""),
+                score=score
+            )
+            documents.append(doc)
+        
+        # Apply Cohere's reranking if enabled
+        if self.use_reranker:
+            documents = self._apply_reranking(query_text, documents)
+            
+            # Sort documents by score in descending order after reranking
+            documents.sort(key=lambda x: x.score, reverse=True)
+            
+        return documents
+    
+    def _api_retrieve(self, query_text: str, k_chunks: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve documents using an external API.
+        
+        Args:
+            query_text: The query text
+            
+        Returns:
+            List of retrieved documents
+        """
+        # TODO: Replace with the actual API endpoint URL
+        # url = "YOUR_ACTUAL_API_ENDPOINT_HERE" 
+        # Using placeholder for now as in the original example
+        url = "http://172.20.10.12:8000/retrieve_fas_chunks" 
+
+        payload = {
+            "query": query_text,
+            "top_k_fas_chunks": k_chunks
+        }
+        
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        
+        response = requests.post(url, json=payload, headers=headers)
+        response.raise_for_status()  # Raise an exception for HTTP errors (4xx or 5xx)
+        
+        # Assuming the API returns JSON
+        response_data = response.json()
+        
+        
+        return response_data
+      
+      
+        
+    
+    def _apply_reranking(self, query_text: str, documents: List[RetrievedDocument]) -> List[RetrievedDocument]:
+        """
+        Apply Cohere's reranking to improve document relevance.
+        
+        Args:
+            query_text: The query text
+            documents: List of retrieved documents
+            
+        Returns:
+            Reranked list of documents
+        """
+        if not self.use_reranker or not documents:
+            return documents
+            
+        try:
+            co = self._get_cohere_client()
+            
+            # Extract document texts for reranking
+            texts = [doc.text for doc in documents]
+            
+            # Use Cohere's reranker
+            rerank_results = co.rerank(
+                query=query_text,
+                documents=texts,
+                model=RERANKER_MODEL,
+                top_n=len(texts)  # Get all results reranked
+            )
+            
+            # Create a new list of documents based on reranking
+            reranked_docs = []
+            for result in rerank_results.results:
+                # Find the original document matching this reranked result
+                orig_doc_idx = result.index
+                orig_doc = documents[orig_doc_idx]
+                
+                # Create a new document with the updated score
+                reranked_doc = RetrievedDocument(
+                    text=orig_doc.text,
+                    standard=orig_doc.standard,
+                    paragraph=orig_doc.paragraph,
+                    score=result.relevance_score  # Use Cohere's relevance score
+                )
+                reranked_docs.append(reranked_doc)
+                
+            return reranked_docs
+            
+        except Exception as e:
+            # Log the error but continue with the original documents
+            print(f"Reranker error: {str(e)}")
+            return documents
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and retrieve relevant documents.
+        
+        Args:
+            state: Input state with transaction entries
+            
+        Returns:
+            Updated state with retrieved documents
+        """
+        # Make a copy to avoid modifying the input
+        new_state = dict(state)
+        
+        # Initialize default output fields.
+        # These will be populated if retrieval is successful,
+        # or remain empty if there's an error, insufficient input, or upstream failure.
+        new_state["retrieved_texts"] = []
+        new_state["sources"] = []
+
+        # Check if a previous node already marked the state as invalid.
+        # If "valid" is not in state or is False, this node should not proceed.
+        # The "valid" status and any "error_message" from upstream are preserved.
+        if not state.get("valid", False):
+            new_state["valid"] = state.get("valid", False) # Ensure 'valid' is explicitly carried over
+            # error_message should ideally be set by the upstream node that invalidated the state.
+            return new_state
+        
+        # If we reach here, state["valid"] was True from upstream.
+        # Set 'valid' to True for this node's operations by default.
+        # It will be set to False if an issue occurs specifically within this node.
+        new_state["valid"] = True
+
+        try:
+            entries = new_state.get("entries", [])
+            context = new_state.get("context")
+            adjustments = new_state.get("adjustments")
+            treatment = new_state.get("accounting_treatment")
+
+            # Check if entries contain any actual debit or credit information.
+            # An entry is considered meaningful if it's a dictionary and has a positive debit or credit.
+            has_meaningful_entries = any(
+                isinstance(entry, dict) and (entry.get("debit", 0.0) > 0 or entry.get("credit", 0.0) > 0)
+                for entry in entries
+            )
+
+            # If there are no meaningful entries AND no other contextual information,
+            # then retrieval is unlikely to be effective.
+            if not has_meaningful_entries and not context and not adjustments and not treatment:
+                new_state["error_message"] = (
+                    "Insufficient information for retrieval: Please provide meaningful transaction entries, "
+                    "context, adjustments, or accounting treatment."
+                )
+                new_state["valid"] = False
+                return new_state # retrieved_texts and sources remain empty
+
+            # Format the query
+            query = self._format_entries_for_search(new_state)
+            retreive_k_chunks = self.top_k
+
+            response = self._api_retrieve(query, retreive_k_chunks)
+            new_state["api_retrieve_response"] = response  # Pass API response to next node
+
+            
+            # Query the vector store
+            documents = self._query_vectorstore(query)
+            
+            reranking_status = "with reranking" if self.use_reranker else "without reranking"
+            print(f"Retrieved documents ({reranking_status}): {len(documents)} results")
+            
+
+            # Extract texts and add to state
+            new_state["retrieved_texts"] = [doc.text for doc in documents]
+            
+            # Also store the document metadata for citing sources
+            new_state["sources"] = [ # Changed "retrieved_sources" to "sources"
+                f"{doc.standard} ¶{doc.paragraph}" for doc in documents
+            ]
+            
+            # Store scores for evaluation/debugging
+            new_state["retrieval_scores"] = [doc.score for doc in documents]
+            new_state["query"] = query
+            
+            # If documents list is empty, retrieved_texts and sources will correctly be empty.
+            # This is a valid outcome (no results found) and not an error in itself.
+            # The 'valid' flag remains True.
+            
+        except Exception as e:
+            new_state["error_message"] = f"Retrieval error: {str(e)}"
+            new_state["valid"] = False
+            # retrieved_texts and sources are already initialized to empty lists due to the setup at the method's start.
+            
+        return new_state
+
+
+--- FILE : nodes/verify.py ---
+
+
+# filepath: d:\Cat2\src\rtx_classifier\nodes\verify.py
+"""
+VerifyNode for the RTX Classifier.
+
+Verifies that the classification cites only retrieved text and contains no forbidden terms.
+Supports both OpenAI and Google Gemini models.
+"""
+from typing import Dict, List, Any, Optional, Set
+import os
+import re
+import dotenv
+
+# Load environment variables
+dotenv.load_dotenv()
+
+from langchain_openai import ChatOpenAI
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import JsonOutputParser
+
+# Get configuration from environment variables
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gpt-4o")
+DEFAULT_MODEL_PROVIDER = os.getenv("DEFAULT_MODEL_PROVIDER", "openai")
+DEFAULT_TEMPERATURE = float(os.getenv("TEMPERATURE", "0.7"))
+
+
+class VerifyNode:
+    """
+    VerifyNode that verifies the classification using the ReAct technique.
+    
+    The verification process ensures that:
+    1. The classification cites only content from retrieved texts
+    2. The classification contains no forbidden terms
+    3. The classification properly supports the classification
+    
+    The ReAct approach enables step-by-step reasoning and explanation for the verification decision.
+    """
+    
+    def __init__(
+        self,
+        llm: Optional[BaseChatModel] = None,
+        template_path: Optional[str] = None,
+    ):
+        """
+        Initialize the VerifyNode.
+        
+        Args:
+            llm: LangChain chat model instance
+            template_path: Path to the Jinja template for the verification prompt
+        """
+        self.llm = llm
+        self.template_path = template_path
+        
+        # Default verification prompt
+        self._prompt_template = self._get_default_template()
+        self.output_parser = JsonOutputParser()
+        
+        # Create default LLM if none provided
+        if self.llm is None:
+            model_provider = os.getenv("DEFAULT_MODEL_PROVIDER", "openai").lower()
+            if model_provider == "openai":
+                self.llm = ChatOpenAI(
+                    model_name=DEFAULT_MODEL,
+                    temperature=DEFAULT_TEMPERATURE,
+                )
+            elif model_provider == "google":
+                self.llm = ChatGoogleGenerativeAI(
+                    model=DEFAULT_MODEL,
+                    temperature=DEFAULT_TEMPERATURE,
+                    convert_system_message_to_human=True,
+                )
+    
+    def _get_default_template(self) -> ChatPromptTemplate:
+        """Get default template for verification using ReAct technique."""
+        template = """\
+        You are an expert in Islamic financial accounting and reporting standards, specifically AAOIFI FAS.
+        Your task is to verify a provisional classification of a financial transaction or event using a step-by-step reasoning process (ReAct approach).
+        
+        The user will provide:
+        1. The original query describing a financial transaction or situation that needs classification.
+        2. Retrieved context from AAOIFI FAS documents.
+        3. A provisional classification label out of these five Financial Accounting Standards: FAS4, FAS7, FAS10, FAS28, FAS32.
+        - FAS 4: Musharaka financing
+        - FAS 7: Salam and Parallel Salam
+        - FAS 10: Istisna\'a and Parallel Istisna\'a
+        - FAS 28: Murabaha and Other Deferred Payment Sales
+        - FAS 32: Ijara and Ijara Muntahia Bittamleek
+        The provisional classification label is based on the retrieved context.
+        
+        IMPORTANT NOTE: You do NOT need to find direct and explicit presence of specific terms and conditions related to that accounting standard in the retrieved context. The verification should focus on ensuring that the classification is not completely wrong or without any basis at all. If the retrieved context supports even a general association with the chosen standard, that is sufficient to consider the classification valid.
+        
+        Please follow this step-by-step reasoning process:
+        
+        Step 1: First, analyze the original query to understand what financial transaction or situation needs to be classified.
+        Step 2: Based on the query alone, consider which FAS standard(s) might be appropriate classifications. Note any alternative standards that could potentially apply.
+        Step 3: Analyze the retrieved context - summarize the key points from the provided texts that are relevant to the query.
+        Step 4: Identify the key characteristics of the provisional classification label.
+        Step 5: Compare these characteristics with both the query details and the content in the retrieved context.
+        Step 6: Evaluate if there are any inconsistencies or missing information. Note that you don\'t need perfect alignment - just ensure the classification has some reasonable basis for the specific query.
+        Step 7: Consider whether any alternative standards identified in Step 2 might be more appropriate than the provisional classification.
+        Step 8: Make a determination on whether the provisional classification is appropriate for the query and supported by the context. Be lenient - only reject classifications that are clearly wrong.
+        Step 9: Provide a detailed explanation of your reasoning process and final decision.
+        
+        Based on your verification, provide a JSON response with the following fields:
+        - "valid": (boolean) true if the provisional classification is supported by the context and appropriate for the query. False otherwise.
+        - "final_classification_label": (string) The verified classification label. This should usually be the same as the provisional_label. If the provisional label is fundamentally unsupported, return the original provisional_label and mark as invalid.
+        - "verification_explanation": (string) A detailed explanation of your reasoning process and why you accepted or rejected the classification. This should follow the ReAct pattern of step-by-step reasoning.
+        - "alternative_standards": (array) List of other FAS standards that could potentially apply to the query, based on your analysis. Include brief reasons for each. If no alternatives are applicable, provide an empty array.
+        - "issue_note": (string, optional) If "valid" is false, provide a brief note on the primary issue (e.g., "Context does not support label.", "Label seems unrelated to context.", "Classification doesn't match the query."). If "valid" is true, this can be omitted.
+        
+        The query to classify is: {{ query }}
+        
+        The provisional classification label is: {{ provisional_label_name }}
+        
+        Retrieved Context:
+        ---
+        {% for text in retrieved_texts %}
+        {{ text }}
+        ---
+        {% endfor %}
+        
+        Respond with ONLY the JSON object.
+        """
+        return ChatPromptTemplate.from_template(template, template_format="jinja2")
+    
+    def _run_llm_verification(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Run the LLM-based verification on the classification using ReAct.
+        
+        Args:
+            state: Current state with provisional classification and transaction details
+            
+        Returns:
+            Verification results with a simplified structure including the explanation.
+        """
+        if not self.llm:
+            return {
+                "valid": False,
+                "issues": ["No LLM available for verification"],
+                "final_classification_label": state.get("provisional_label_name", ""),
+                "verification_explanation": "Verification could not be performed as no LLM was available."
+            }
+        
+        # Prepare variables for the template
+        inputs = {
+            "provisional_label_name": state.get("provisional_label_name", ""),
+            "retrieved_texts": state.get("retrieved_texts", []), 
+            "query": state.get("query", ""),
+        }
+        
+        # Create the chain
+        chain = self._prompt_template | self.llm | self.output_parser
+        
+        # Call the LLM
+        try:
+            result = chain.invoke(inputs)
+
+            is_valid_from_llm = result.get("valid", False)
+            if isinstance(is_valid_from_llm, str):
+                is_valid_from_llm = is_valid_from_llm.lower() == 'true'
+            result["valid"] = bool(is_valid_from_llm)
+
+            if "final_classification_label" not in result:
+                result["final_classification_label"] = state.get("provisional_label_name", "")
+
+            # Extract the explanation from the ReAct process
+            verification_explanation = result.get("verification_explanation", "No detailed explanation provided.")
+            
+            # Extract any alternative standards identified
+            alternative_standards = result.get("alternative_standards", [])
+            if not isinstance(alternative_standards, list):
+                alternative_standards = []
+
+            issues_for_downstream = []
+            llm_issue_note = result.get("issue_note")
+
+            if llm_issue_note and isinstance(llm_issue_note, str) and llm_issue_note.strip():
+                issues_for_downstream.append(llm_issue_note)
+            
+            if not result["valid"] and not issues_for_downstream:
+                issues_for_downstream.append(
+                    "Verification LLM reported 'valid: false' but 'issue_note' was missing or empty."
+                )
+            
+            # Return a structure including the verification explanation and alternative standards
+            return {
+                "valid": result["valid"],
+                "final_classification_label": result["final_classification_label"],
+                "issues": issues_for_downstream,
+                "verification_explanation": verification_explanation,
+                "alternative_standards": alternative_standards
+            }
+
+        except Exception as e:
+            return {
+                "valid": False,
+                "issues": [f"Verification LLM error: {str(e)}"],
+                "final_classification_label": state.get("provisional_label_name", ""),
+                "verification_explanation": f"Error during verification: {str(e)}"
+            }
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and verify the classification.
+        
+        Args:
+            state: Input state with provisional label
+            
+        Returns:
+            Updated state with verification results, focusing on validity, final label, and explanation.
+        """
+        new_state = dict(state)
+    
+        if not new_state.get("valid", False): # Check if prior nodes invalidated the state
+            # Ensure 'final_classification_label' exists if we are returning early due to prior invalidation
+            if "final_classification_label" not in new_state:
+                 new_state["final_classification_label"] = new_state.get("provisional_label_name", "")
+            # Ensure 'probs_vector' is preserved if it exists
+            if "probs_vector" not in new_state:
+                new_state["probs_vector"] = {} # Or some default if appropriate
+            return new_state
+        
+    
+        provisional_label_name = new_state.get("provisional_label_name", "")
+        # print(f"VerifyNode: Provisional Label for verification: {provisional_label_name}")
+
+        verification_result = self._run_llm_verification(new_state)
+        
+        new_state["valid"] = verification_result.get("valid", False)
+        new_state["final_classification_label"] = verification_result.get("final_classification_label", provisional_label_name)
+        
+        # Add the detailed verification explanation to the state
+        new_state["verification_explanation"] = verification_result.get("verification_explanation", "")
+        
+        # Add alternative standards information to the state
+        new_state["alternative_standards"] = verification_result.get("alternative_standards", [])
+        
+        provisional_rationale = new_state.get("provisional_rationale", "")
+        
+        if not new_state["valid"]:
+            error_messages = verification_result.get("issues", ["Verification failed for unspecified reasons."])
+            new_state["error_message"] = "Verification failed: " + "; ".join(error_messages)
+            new_state["retry_count"] = new_state.get("retry_count", 0) + 1
+        else:
+            # If verification is successful, use the detailed explanation as the final rationale
+            if new_state["verification_explanation"]:
+                new_state["final_rationale"] = new_state["verification_explanation"]
+            else:
+                new_state["final_rationale"] = provisional_rationale
+                
+            print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
+        
+        # For debugging - show the verification explanation and alternative standards
+        print(f"VerifyNode: Verification explanation: {new_state.get('verification_explanation', '')[:100]}...")
+        
+        # Display alternative standards if any were found
+        alternative_standards = new_state.get('alternative_standards', [])
+        if alternative_standards:
+            print(f"VerifyNode: Alternative standards: {alternative_standards}")
+
+        # Ensure probs_vector is preserved or initialized
+        if "probs_vector" not in new_state:
+            new_state["probs_vector"] = {} # Or handle as per how it's generated upstream
+     
+        return new_state
+
+
+
+--- FILE : nodes/voting.py ---
+
+
+"""
+MajorityVoteNode for the RTX Classifier.
+
+Aggregates multiple logits and selects the most likely classification.
+"""
+from typing import Dict, List, Any, Optional
+import numpy as np
+
+# Standard labels for classification
+LABELS = ["FAS4", "FAS7", "FAS10", "FAS28", "FAS32"]
+
+
+class MajorityVoteNode:
+    """
+    MajorityVoteNode that averages logits from multiple classifiers and selects
+    a provisional label based on the highest average score.
+    """
+    
+    def __init__(self, labels: Optional[List[str]] = None):
+        """
+        Initialize the MajorityVoteNode.
+        
+        Args:
+            labels: List of label names (defaults to standard AAOIFI FAS labels)
+        """
+        self.labels = labels or LABELS
+    
+    def _average_logits(self, logits_list: List[List[float]]) -> List[float]:
+    
+        n_classes = len(self.labels)
+
+        # 0️⃣  Empty guard → uniform distribution
+        if not logits_list:
+            return [1.0 / n_classes] * n_classes
+
+        # Hyper-parameters (use instance attrs if they exist, else defaults)
+        beta   = getattr(self, "beta_temp",     1.3)   # >1  => flatter
+        eps    = getattr(self, "epsilon_floor", 0.02)  # small positive floor
+
+        # 1️⃣  Mean of logits across runs
+        mean_logits = np.mean(np.array(logits_list), axis=0)
+
+        # Safety: clamp to avoid log(0)
+        mean_logits = np.clip(mean_logits, 1e-9, None)
+
+        # 2️⃣  Temperature scaling via softmax
+        scaled = np.exp(np.log(mean_logits) / beta)
+        probs  = scaled / scaled.sum()
+
+        # 3️⃣  ε-floor smoothing
+        probs  = probs + eps
+        probs  = probs / probs.sum()
+
+        return probs.tolist()
+    
+    def _get_max_label_index(self, logits: List[float]) -> int:
+        """
+        Get the index of the maximum value in logits.
+        
+        Args:
+            logits: Logits array
+            
+        Returns:
+            Index of maximum value
+        """
+        return np.argmax(logits)
+    
+    def __call__(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process the input state and aggregate logits.
+        
+        Args:
+            state: Input state with multiple logits arrays, rationales, classifications, and standard citations
+            
+        Returns:
+            Updated state with averaged logits, provisional label, rationale, and standard citation
+        """
+        # Make a copy to avoid modifying the input
+        new_state = dict(state)
+        print(f"DEBUG: MajorityVoteNode: Entry logits: {new_state.get('logits')}")
+        # print(f"DEBUG: MajorityVoteNode: Entry state logits: {new_state.get('logits')}") # Can be verbose
+
+        # Check if previous steps failed
+        if not new_state.get("valid", False):
+            print("DEBUG: MajorityVoteNode: Exiting early, state not valid.")
+            return new_state
+        
+        # Get logits lists
+        logits_list = new_state.get("logits", [])
+        
+        if not logits_list:
+            new_state["error_message"] = "No logits to aggregate"
+            new_state["valid"] = False
+            print("DEBUG: MajorityVoteNode: Exiting, no logits to aggregate.")
+            return new_state
+        
+        # Average logits
+        avg_logits = self._average_logits(logits_list)
+        new_state["avg_logits"] = avg_logits
+        print(f"DEBUG: MajorityVoteNode: Calculated avg_logits: {avg_logits}")
+        
+        # Get provisional label index and name
+        max_idx = self._get_max_label_index(avg_logits)
+        new_state["provisional_label"] = max_idx # Store index
+        provisional_label_name_from_voting = "Error: Label index out of bounds"
+        if max_idx < len(self.labels):
+            provisional_label_name_from_voting = self.labels[max_idx]
+            new_state["provisional_label_name"] = provisional_label_name_from_voting
+        else:
+            new_state["provisional_label_name"] = provisional_label_name_from_voting
+            new_state["valid"] = False # Cannot proceed without a valid label name
+            new_state["error_message"] = "Provisional label index out of bounds"
+            return new_state
+
+        # Get rationales, classifications, and standard citations from the state
+        rationales = new_state.get("rationales")
+        
+
+
+        classifications = new_state.get("classifications", [])  # From ClassifyFanOutNode
+        standard_citations = new_state.get("standard_citations", [])  # From ClassifyFanOutNode
+
+        chosen_rationale = "Rationale could not be determined from individual runs."
+        chosen_standard_citation = "Standard citation could not be determined from individual runs."
+        found_matching_run = False
+
+        # Attempt 1: Find a run that matches the provisional_label_name
+        if classifications and rationales and standard_citations:
+            for i in range(len(classifications)):
+                if classifications[i] == provisional_label_name_from_voting: # Use the one from voting node logic
+                    if i < len(rationales) and i < len(standard_citations):
+                        chosen_rationale = rationales[i]
+                        chosen_standard_citation = standard_citations[i]
+                        found_matching_run = True
+                        print(f"DEBUG: MajorityVoteNode: Found matching run {i} for label {provisional_label_name_from_voting}")
+                        break 
+        
+        # Attempt 2 (Fallback): If no direct match, find the run with the highest logit for the winning class
+        if not found_matching_run and logits_list:
+            print(f"DEBUG: MajorityVoteNode: No direct matching run found. Using fallback logic for rationale/citation for label {provisional_label_name_from_voting} (index {max_idx}).")
+            best_run_idx_for_winning_class = -1
+            max_logit_for_winning_class = -float('inf')
+
+            for run_idx, run_logits in enumerate(logits_list):
+                if max_idx < len(run_logits):  # Ensure the class index is valid for this run's logits
+                    if run_logits[max_idx] > max_logit_for_winning_class:
+                        max_logit_for_winning_class = run_logits[max_idx]
+                        best_run_idx_for_winning_class = run_idx
+            
+            if best_run_idx_for_winning_class != -1:
+                print(f"DEBUG: MajorityVoteNode: Fallback run index {best_run_idx_for_winning_class} had max logit {max_logit_for_winning_class} for class index {max_idx}.")
+                if best_run_idx_for_winning_class < len(rationales):
+                    chosen_rationale = rationales[best_run_idx_for_winning_class]
+                else:
+                    print(f"DEBUG: MajorityVoteNode: Fallback run index {best_run_idx_for_winning_class} out of bounds for rationales (len {len(rationales)}).")
+                
+                if best_run_idx_for_winning_class < len(standard_citations):
+                    chosen_standard_citation = standard_citations[best_run_idx_for_winning_class]
+                else:
+                    print(f"DEBUG: MajorityVoteNode: Fallback run index {best_run_idx_for_winning_class} out of bounds for standard_citations (len {len(standard_citations)}).")
+            else:
+                print(f"DEBUG: MajorityVoteNode: Fallback logic could not determine a best run.")
+        
+        new_state["provisional_rationale"] = chosen_rationale
+        new_state["provisional_standard_citation"] = chosen_standard_citation
+        
+        print(f"DEBUG: MajorityVoteNode: Provisional label name: {new_state['provisional_label_name']}")
+        print(f"DEBUG: MajorityVoteNode: Provisional rationale: {chosen_rationale[:100]}...") # Print snippet
+        print(f"DEBUG: MajorityVoteNode: Provisional standard citation: {chosen_standard_citation}")
+
+      
+
+        return new_state
+
+
+--- FILE : nodes/__init__.py ---
+
+
+"""
+Nodes for the RTX Classifier LangGraph pipeline.
+"""
+
+from .preprocess import PreprocessNode
+from .retrieve import RetrieveNode
+from .classify import ClassifyFanOutNode
+from .voting import MajorityVoteNode
+from .calibrate import CalibrateNode
+from .rationale import RationaleNode # Add RationaleNode import
+from .verify import VerifyNode
+from .compose import ComposeNode
+
+__all__ = [
+    "PreprocessNode",
+    "RetrieveNode",
+    "ClassifyFanOutNode",
+    "MajorityVoteNode",
+    "CalibrateNode",
+    "RationaleNode", # Add RationaleNode to __all__
+    "VerifyNode",
+    "ComposeNode",
+]
+
+

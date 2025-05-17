@@ -55,6 +55,8 @@ class ClassifierState:
     retry_count: int = 0
     verification_explanation : Optional[str] = None # Added by VerifyNode
     final_rationale: Optional[str] = None # Added by VerifyNode
+    alternative_standards: List[str] = field(default_factory=list) # Added by VerifyNode
+    api_retrieve_response: Optional[dict] = None  # Added to pass API response from retrieve node
     
     # Final output focus
     prob_vector: List[float] = field(default_factory=list)
@@ -376,6 +378,7 @@ def run_classifier(
     output_error_message = result.get("error_message")
     rationale = result.get("final_rationale", None)
     label = result.get("final_classification_label", None)
+    alternative_standards = result.get("alternative_standards", None)
 
     if not isinstance(output_prob_vector, list) or len(output_prob_vector) != 5:
         output_prob_vector = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
@@ -388,6 +391,7 @@ def run_classifier(
         "label": label,
         "valid": output_valid,
         "rationale": rationale,
+        "alternative_standards": alternative_standards,
         "error_message": None,  # Initialize to None, will be set if invalid
     }
     if not output_valid:

@@ -146,16 +146,7 @@ if st.button("Run Classifier", key="run_classifier_button"):
         # st.subheader("Classification Result:") # Commented out
         with st.spinner("Running classifier..."):
             try:
-                result = run_classifier(json_data_to_process, model_provider=st.session_state.model_provider, model_name=st.session_state.model_name)
-                  # if "rationale" in result: # Commented out
-                #     st.write("**Rationale:**")
-                #     st.write(result["rationale"])                # if "sources" in result and result["sources"]: # Commented out
-                #     st.write("**Relevant FAS Documents:**")
-                #     for source in result["sources"]:
-                #         st.markdown(f"- {source}") 
-                # else:
-                #     st.write("No specific FAS documents identified.")
-                
+                result = run_classifier(json_data_to_process, model_provider=st.session_state.model_provider, model_name=st.session_state.model_name)                # Following commented code removed for clarity
                 if "label" in result and result["label"]:
                     label_code = result["label"]
                     full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
@@ -165,18 +156,50 @@ if st.button("Run Classifier", key="run_classifier_button"):
                     st.subheader("Rationale:")
                     st.write(result["rationale"])
                 
-                if "prob_vector" in result and result["prob_vector"]:
-                    # st.write("**Probability Vector:**") # Commented out
-                    if isinstance(result["prob_vector"], list) and len(result["prob_vector"]) == len(LABELS):
-                        for i, label_code in enumerate(LABELS):
-                            full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
-                            probability = result["prob_vector"][i]
-                            st.markdown(f"- **{full_name} ({label_code})**: {probability:.4f}")
-                    else:
-                        # st.write("Probability vector format is unexpected or does not match known labels. Displaying raw vector:") # Commented out
-                        st.json(result["prob_vector"])
-                # else: # Commented out
-                    # st.write("No probability vector provided in the result.")
+                if "alternative_standards" in result and result["alternative_standards"]:
+                    st.subheader("Alternative Standards to Consider:")
+                    for alt_standard in result["alternative_standards"]:
+                        # Handle both string and dictionary formats
+                        if isinstance(alt_standard, dict) and "standard" in alt_standard and "reason" in alt_standard:
+                            # Handle structured format if the LLM returns it this way
+                            standard_code = alt_standard["standard"]
+                            explanation = alt_standard["reason"]
+                            standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                            formatted_alt = f"**{standard_code}** ({standard_name}): {explanation}"
+                            st.markdown(formatted_alt)
+                        else:
+                            # For string format, try to parse it
+                            explanation = alt_standard
+                            
+                            # Try to find standard code patterns like "FAS X" or "FAS XX"
+                            import re
+                            match = re.match(r'^(FAS\s*\d+)', alt_standard, re.IGNORECASE)
+                            if match:
+                                standard_code = match.group(1).strip()
+                                # Get the full name if available
+                                standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                                # Remove the standard code from the beginning of the explanation
+                                explanation = alt_standard[len(match.group(1)):].strip()
+                                # Remove leading punctuation if any
+                                explanation = explanation.lstrip(":- ")
+                                
+                                # Format with the standard name and explanation
+                                formatted_alt = f"**{standard_code}** ({standard_name}): {explanation}"
+                                st.markdown(formatted_alt)
+                            else:
+                                # If no standard code pattern is found, look for common patterns in the text
+                                pattern = r'(FAS\s*\d+)'
+                                matches = re.findall(pattern, alt_standard)
+                                if matches:
+                                    # Get the first FAS mention
+                                    standard_code = matches[0].strip()
+                                    standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                                    # Format with the standard name highlighted
+                                    formatted_alt = alt_standard.replace(standard_code, f"**{standard_code}** ({standard_name})", 1)
+                                    st.markdown(formatted_alt)
+                                else:
+                                    # If no patterns found, just display as is with bullet point
+                                    st.markdown(f"- {alt_standard}")
                 
                 # Optionally display full result for debugging
                 # st.write("**Full Result (for debugging):**")

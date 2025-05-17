@@ -120,26 +120,26 @@ class ClassifyFanOutNode:
         {% if entry.debit %}Dr. {{ entry.account }}: {{ entry.debit }}{% endif %}
         {% if entry.credit %}Cr. {{ entry.account }}: {{ entry.credit }}{% endif %}
         {% endfor %}
-        
+
         {% if context %}
         Context: {{ context }}
         {% endif %}
-        
+
         {% if adjustments %}
         Adjustments: {{ adjustments }}
         {% endif %}
-        
+
         {% if accounting_treatment %}
         Accounting treatment: {{ accounting_treatment }}
         {% endif %}
-        
+
         The transaction should be classified according to one of these AAOIFI standards:
         - FAS 4: Musharaka financing
         - FAS 7: Salam and Parallel Salam
         - FAS 10: Istisna'a and Parallel Istisna'a
         - FAS 28: Murabaha and Other Deferred Payment Sales
         - FAS 32: Ijara and Ijara Muntahia Bittamleek
-        
+
         {% if excluded_standards is defined and excluded_standards %}
         IMPORTANT: The following standards are to be EXCLUDED. Their corresponding confidence scores (logits) in the output MUST be extremely low (near zero):
         {% for standard in excluded_standards %}
@@ -148,24 +148,31 @@ class ClassifyFanOutNode:
         Remember, the logits array corresponds to [FAS4, FAS7, FAS10, FAS28, FAS32].
         {% endif %}
 
-        Based on the retrieved sources:
-        {% for text in retrieved_texts %}
-        --- Source {{loop.index}} ---
-        {{ text }}
+        {% if api_query %}
+        SEARCH QUERY USED: "{{ api_query }}"
+        {% endif %}
+
+        RELEVANCE SCORE EXPLANATION: The relevance scores below indicate how closely each chunk of text matches the transaction details. Scores range from 0 to 1, where higher scores (closer to 1) indicate stronger relevance to the transaction. Give more weight to chunks with higher relevance scores when determining classification.
+
+        Based on the RAG (BM25 + VECTOR STORE) retrieved sources (sorted by relevance):
+        {% for chunk in api_chunks|sort(attribute='score', reverse=true) %}
+        --- Source from {{ chunk.document_name }} (Relevance Score: {{ chunk.score|round(3) }}) ---
+        {{ chunk.chunk_text }}
         {% endfor %}
-        
+
         Think through this step by step:
         1. Identify the accounts involved and their nature
         2. Determine the transaction type based on account names and flow
         3. Match the transaction characteristics to AAOIFI standards
-        4. Consider any specific requirements in the applicable standard, including referencing specific paragraphs from the standard.
-        
+        4. Prioritize evidence from chunks with higher relevance scores (>0.7 is highly relevant)
+        5. If multiple standards could apply, use the highest relevance score chunks to make your final decision
+
         Finally, provide your classification and reasoning in this JSON format:
         {
-          "logits": [float, float, float, float, float],  // Confidence scores for each standard in order: FAS4, FAS7, FAS10, FAS28, FAS32
-          "rationale": "Your detailed reasoning for the classification. This reasoning MUST clearly state the determined AAOIFI standard and include specific paragraph citations from the retrieved AAOIFI sources (e.g., 'As per FAS 10, paragraph 3.1, ... which indicates this transaction is Istisna\\'a because...'). Ensure the reasoning directly supports the chosen classification."
+        "logits": [float, float, float, float, float],  // Confidence scores for each standard in order: FAS4, FAS7, FAS10, FAS28, FAS32
+        "rationale": "Your detailed reasoning for the classification. This reasoning MUST clearly state the determined AAOIFI standard."
         }
-        
+
         Your logits should sum to 1.0 representing a probability distribution.
         """
         return PromptTemplate.from_template(
@@ -173,7 +180,7 @@ class ClassifyFanOutNode:
             template_format="jinja2",
             partial_variables={"STANDARD_FULL_NAMES": STANDARD_FULL_NAMES}
             # Removed explicit input_variables to let them be inferred by from_template
-            # input_variables=["entries", "context", "adjustments", "accounting_treatment", "retrieved_texts"]
+            # input_variables=["entries", "context", "adjustments", "accounting_treatment", "api_chunks"]
         )
 
     def _get_prompt_template(self):
@@ -193,14 +200,34 @@ class ClassifyFanOutNode:
         # Get the prompt template
         prompt = self._get_prompt_template()
         
+        # Process api_retrieve data
+        api_chunks = []
+        api_query = ""
+        api_retrieve = state.get("api_retrieve_response", None)
+        if api_retrieve and isinstance(api_retrieve, dict):
+            # Extract the FAS chunks and query from the API retrieve response
+            api_chunks = api_retrieve.get("fas_chunks", [])
+            api_query = api_retrieve.get("query", "")
+            
+            # Sort chunks by relevance score (highest first)
+            if api_chunks:
+                api_chunks = sorted(api_chunks, key=lambda x: float(x.get("score", 0)), reverse=True)
+            
+
+        
+        # If no API chunks are available, set empty list to ensure proper handling
+        if not api_chunks:
+            api_chunks = []
+        
         # Prepare variables for the template
         inputs = {
             "entries": state.get("entries", []),
             "context": state.get("context"),
             "adjustments": state.get("adjustments"),
             "accounting_treatment": state.get("accounting_treatment"),
-            "retrieved_texts": state.get("retrieved_texts", [])[:5],  # Limit to avoid context overflow
             "excluded_standards": state.get("excluded_standards", []), # Added for exclusions
+            "api_chunks": api_chunks,  # Use API retrieved chunks exclusively
+            "api_query": api_query,  # Add the query that was used for retrieval
         }
         
         # Create and run the chain
@@ -286,6 +313,14 @@ class ClassifyFanOutNode:
         """
         # Make a copy to avoid modifying the input
         new_state = dict(state)
+
+        api_retrieve = new_state.get("api_retrieve_response", None)
+        
+        # Check if API retrieve contains valid data and add relevant information to the state
+        if api_retrieve and isinstance(api_retrieve, dict):
+            query = api_retrieve.get("query", "")
+            if query:
+                new_state["api_query"] = query
         
         # Check if previous steps failed
         if not new_state.get("valid", False):
