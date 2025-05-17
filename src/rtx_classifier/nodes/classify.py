@@ -213,6 +213,8 @@ class ClassifyFanOutNode:
             # If chain.invoke() was successful, JsonOutputParser ensures 'result' is a dict.
             logits = result.get("logits", [])
             rationale = result.get("rationale", "")
+
+            
             
             # Check logits
             if not isinstance(logits, list) or len(logits) != 5:

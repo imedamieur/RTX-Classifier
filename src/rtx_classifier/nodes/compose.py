@@ -34,6 +34,9 @@ class ComposeNode:
         prob_vector_to_return = new_state.get("prob_vector", [0.0, 0.0, 0.0, 0.0, 0.0])
         is_valid = new_state.get("valid", False)
         error_msg_to_propagate = new_state.get('error_message')
+        rationale = new_state.get("final_rationale", None)
+
+
 
         # Ensure prob_vector has 5 elements, providing a default if not, especially on error
         if not isinstance(prob_vector_to_return, list) or len(prob_vector_to_return) != 5:
@@ -45,7 +48,8 @@ class ComposeNode:
 
         final_output = {
             "prob_vector": prob_vector_to_return,
-            "valid": is_valid
+            "valid": is_valid,
+            "rationale": rationale,
         }
 
         if not is_valid:
@@ -55,11 +59,6 @@ class ComposeNode:
         
         # Remove fields that are no longer part of the primary output focus
         # These might still be in the state from previous nodes but are not part of the final desired output.
-        keys_to_remove_from_final_state_dict = ["final_rationale", "sources", "correction_notes", 
-                                                "final_explanation", "provisional_explanation", "citations",
-                                                "retrieved_texts", "logits", "avg_logits", "provisional_label",
-                                                "entries", "context", "adjustments", "accounting_treatment",
-                                                "final_classification_label", "issue_note"]
         
         # The graph execution will return the full state dictionary from the last node.
         # We are modifying the state `new_state` here which will be returned by the graph.
@@ -73,13 +72,13 @@ class ComposeNode:
 
         new_state["prob_vector"] = final_output["prob_vector"]
         new_state["valid"] = final_output["valid"]
+        new_state["final_rationale"] = final_output["rationale"]
+        # If there is an error message in the final output, propagate it to the new state
         if "error_message" in final_output:
             new_state["error_message"] = final_output["error_message"]
         else:
             new_state.pop("error_message", None)
 
-        # Clean up other keys from the state that are no longer relevant to the final output
-        for key_to_remove in keys_to_remove_from_final_state_dict:
-            new_state.pop(key_to_remove, None)
+        
             
         return new_state

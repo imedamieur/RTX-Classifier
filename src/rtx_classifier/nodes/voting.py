@@ -106,7 +106,10 @@ class MajorityVoteNode:
             return new_state
 
         # Get rationales, classifications, and standard citations from the state
-        rationales = new_state.get("rationales", [])
+        rationales = new_state.get("rationales")
+        
+
+
         classifications = new_state.get("classifications", [])  # From ClassifyFanOutNode
         standard_citations = new_state.get("standard_citations", [])  # From ClassifyFanOutNode
 
@@ -157,5 +160,7 @@ class MajorityVoteNode:
         print(f"DEBUG: MajorityVoteNode: Provisional label name: {new_state['provisional_label_name']}")
         print(f"DEBUG: MajorityVoteNode: Provisional rationale: {chosen_rationale[:100]}...") # Print snippet
         print(f"DEBUG: MajorityVoteNode: Provisional standard citation: {chosen_standard_citation}")
+
+      
 
         return new_state

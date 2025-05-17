@@ -46,10 +46,14 @@ class ClassifierState:
     error_message: Optional[str] = None
     retrieved_texts: List[str] = field(default_factory=list)
     logits: List[List[float]] = field(default_factory=list) # From ClassifyFanOutNode
+    rationales: List[str] = field(default_factory=list) # From ClassifyFanOutNode
     avg_logits: List[float] = field(default_factory=list) # From MajorityVoteNode
     provisional_label: Optional[int] = None # Retained as it might be used by calibration/voting before verification
+    provisional_rationale: Optional[str] = None
+    provisional_label_name: Optional[str] = None # Added for clarity
     final_classification_label: Optional[str] = None # Added by VerifyNode
     retry_count: int = 0
+    final_rationale: Optional[str] = None # Added by VerifyNode
     
     # Final output focus
     prob_vector: List[float] = field(default_factory=list)
@@ -369,6 +373,7 @@ def run_classifier(
     output_prob_vector = result.get("prob_vector", [])
     output_valid = result.get("valid", False)
     output_error_message = result.get("error_message")
+    rationale = result.get("final_rationale", None)
 
     if not isinstance(output_prob_vector, list) or len(output_prob_vector) != 5:
         output_prob_vector = [0.0, 0.0, 0.0, 0.0, 0.0] # Default error state
@@ -378,7 +383,9 @@ def run_classifier(
 
     final_output = {
         "prob_vector": output_prob_vector,
-        "valid": output_valid
+        "valid": output_valid,
+        "rationale": rationale,
+        "error_message": None,  # Initialize to None, will be set if invalid
     }
     if not output_valid:
         final_output["error_message"] = output_error_message or "Classification failed for an unspecified reason."

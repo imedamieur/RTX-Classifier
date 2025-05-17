@@ -71,12 +71,18 @@ class VerifyNode:
     def _get_default_template(self) -> ChatPromptTemplate:
         """Get default template for verification."""
         template = """\
-        You are an expert in financial accounting and reporting standards, specifically AAOIFI FAS.
+        You are an expert in Islamic financial accounting and reporting standards, specifically AAOIFI FAS.
         Your task is to verify a provisional classification of a financial transaction or event.
         
         The user will provide:
         1. Retrieved context from AAOIFI FAS documents.
-        2. A provisional classification label (e.g., "Revenue", "Expense", "Asset", "Liability", "Equity").
+        2. A provisional classification label out of these five Financial Accounting Standards: FAS4, FAS7, FAS10, FAS28, FAS32.
+        - FAS 4: Musharaka financing
+        - FAS 7: Salam and Parallel Salam
+        - FAS 10: Istisna'a and Parallel Istisna'a
+        - FAS 28: Murabaha and Other Deferred Payment Sales
+        - FAS 32: Ijara and Ijara Muntahia Bittamleek
+        The provisional classification label is based on the retrieved context.	
         
         You need to perform the following checks:
         1. Source Adherence: Ensure the provisional classification is plausible based *only* on the provided "Retrieved Context".
@@ -120,7 +126,7 @@ class VerifyNode:
         # Prepare variables for the template
         inputs = {
             "provisional_label_name": state.get("provisional_label_name", ""),
-            "retrieved_texts": state.get("retrieved_texts", [])[:5],  # Limit to avoid context overflow
+            "retrieved_texts": state.get("retrieved_texts", []),  
         }
         
         # Create the chain
@@ -174,7 +180,7 @@ class VerifyNode:
             Updated state with verification results, focusing on validity and final label.
         """
         new_state = dict(state)
-        
+    
         if not new_state.get("valid", False): # Check if prior nodes invalidated the state
             # Ensure 'final_classification_label' exists if we are returning early due to prior invalidation
             if "final_classification_label" not in new_state:
@@ -192,20 +198,17 @@ class VerifyNode:
         new_state["valid"] = verification_result.get("valid", False)
         new_state["final_classification_label"] = verification_result.get("final_classification_label", provisional_label_name)
         
-        # Remove old explanation/rationale fields
-        new_state.pop("final_explanation", None)
-        new_state.pop("sources", None)
-        new_state.pop("correction_notes", None)
-        new_state.pop("explanation", None) # from older structure
-        new_state.pop("citations", None) # from older structure
+        provisional_rationale = new_state.get("provisional_rationale", "")
+        print(f"DEBUGAAAAA: VerifyNode: Provisional rationale: {provisional_rationale}")
 
         if not new_state["valid"]:
             error_messages = verification_result.get("issues", ["Verification failed for unspecified reasons."])
             new_state["error_message"] = "Verification failed: " + "; ".join(error_messages)
             new_state["retry_count"] = new_state.get("retry_count", 0) + 1
             # print(f"VerifyNode: Verification failed for {provisional_label_name}. Reason: {new_state['error_message']}")
-        # else:
-            # print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
+        else:
+            new_state["final_rationale"] = provisional_rationale
+            print(f"VerifyNode: Verification successful for {provisional_label_name}. Final label: {new_state['final_classification_label']}")
 
         # Ensure probs_vector is preserved or initialized
         if "probs_vector" not in new_state:
@@ -214,5 +217,5 @@ class VerifyNode:
         # Clean up any other potential explanation-related fields that might be in the state
         # from previous nodes, if their names are known.
         # For now, the specific ones are popped above.
-
+     
         return new_state

@@ -58,8 +58,6 @@ class RationaleNode:
             The same input state, with a note that rationale was skipped.
         """
         new_state = dict(state)
-        # Ensure fields previously populated by this node are handled or removed
-        new_state.pop("provisional_explanation", None)
         # print("RationaleNode: Bypassed, passing state through.")
         return new_state
 

@@ -69,6 +69,9 @@ class CalibrateNode:
         new_state = dict(state)
         print(f"DEBUG: CalibrateNode: Entry state valid: {new_state.get('valid')}")
         print(f"DEBUG: CalibrateNode: Entry state avg_logits: {new_state.get('avg_logits')}")
+        print(f"DEBUG: CalibrateNode: Entry provisional rationale: {new_state.get('provisional_rationale')}")
+
+        print(f"DEBUG: CAlibrateNode: Entry state: {new_state}")
 
         # Check if previous steps failed
         if not new_state.get("valid", False):
@@ -100,6 +103,5 @@ class CalibrateNode:
         
         # Store the probabilities in the state
         new_state["prob_vector"] = probabilities
-        print(f"DEBUG: CalibrateNode: Calculated prob_vector: {probabilities}")
         
         return new_state
