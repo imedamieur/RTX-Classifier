@@ -172,11 +172,56 @@ if run_button:
                             label_code = final_result["final_classification_label"]
                             full_name = STANDARD_FULL_NAMES.get(label_code, label_code)
                             st.subheader(f"Classification: {full_name} ({label_code})")
-                        
-                        # Display the rationale
+                          # Display the rationale
                         if "provisional_rationale" in final_result and final_result["provisional_rationale"]:
                             st.subheader("Rationale:")
                             st.write(final_result["provisional_rationale"])
+                            
+                        # Display alternative standards if available
+                        if "alternative_standards" in final_result and final_result["alternative_standards"]:
+                            st.subheader("Alternative Standards to Consider:")
+                            for alt_standard in final_result["alternative_standards"]:
+                                # Handle both string and dictionary formats
+                                if isinstance(alt_standard, dict) and "standard" in alt_standard and "reason" in alt_standard:
+                                    # Handle structured format if the LLM returns it this way
+                                    standard_code = alt_standard["standard"]
+                                    explanation = alt_standard["reason"]
+                                    standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                                    formatted_alt = f"**{standard_code}** ({standard_name}): {explanation}"
+                                    st.markdown(formatted_alt)
+                                else:
+                                    # For string format, try to parse it
+                                    explanation = alt_standard
+                                    
+                                    # Try to find standard code patterns like "FAS X" or "FAS XX"
+                                    import re
+                                    match = re.match(r'^(FAS\s*\d+)', alt_standard, re.IGNORECASE)
+                                    if match:
+                                        standard_code = match.group(1).strip()
+                                        # Get the full name if available
+                                        standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                                        # Remove the standard code from the beginning of the explanation
+                                        explanation = alt_standard[len(match.group(1)):].strip()
+                                        # Remove leading punctuation if any
+                                        explanation = explanation.lstrip(":- ")
+                                        
+                                        # Format with the standard name and explanation
+                                        formatted_alt = f"**{standard_code}** ({standard_name}): {explanation}"
+                                        st.markdown(formatted_alt)
+                                    else:
+                                        # If no standard code pattern is found, look for common patterns in the text
+                                        pattern = r'(FAS\s*\d+)'
+                                        matches = re.findall(pattern, alt_standard)
+                                        if matches:
+                                            # Get the first FAS mention
+                                            standard_code = matches[0].strip()
+                                            standard_name = STANDARD_FULL_NAMES.get(standard_code.replace(" ", ""), "")
+                                            # Format with the standard name highlighted
+                                            formatted_alt = alt_standard.replace(standard_code, f"**{standard_code}** ({standard_name})", 1)
+                                            st.markdown(formatted_alt)
+                                        else:
+                                            # If no patterns found, just display as is with bullet point
+                                            st.markdown(f"- {alt_standard}")
                             
                         # Note: Probability scores are intentionally not shown in the main response
                         # They are still available in the Step-by-Step Pipeline Results -> Compose tab
